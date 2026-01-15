@@ -32,21 +32,21 @@ Download the latest release for your platform:
 
 **macOS (Apple Silicon):**
 ```bash
-curl -LO https://github.com/YOURUSER/bambutop/releases/latest/download/bambutop-macos-aarch64.tar.gz
+curl -LO https://github.com/rhoopr/bambutop/releases/latest/download/bambutop-macos-aarch64.tar.gz
 tar xzf bambutop-macos-aarch64.tar.gz
 sudo mv bambutop /usr/local/bin/
 ```
 
 **macOS (Intel):**
 ```bash
-curl -LO https://github.com/YOURUSER/bambutop/releases/latest/download/bambutop-macos-x86_64.tar.gz
+curl -LO https://github.com/rhoopr/bambutop/releases/latest/download/bambutop-macos-x86_64.tar.gz
 tar xzf bambutop-macos-x86_64.tar.gz
 sudo mv bambutop /usr/local/bin/
 ```
 
 **Linux (x86_64):**
 ```bash
-curl -LO https://github.com/YOURUSER/bambutop/releases/latest/download/bambutop-linux-x86_64.tar.gz
+curl -LO https://github.com/rhoopr/bambutop/releases/latest/download/bambutop-linux-x86_64.tar.gz
 tar xzf bambutop-linux-x86_64.tar.gz
 sudo mv bambutop /usr/local/bin/
 ```
@@ -56,7 +56,7 @@ sudo mv bambutop /usr/local/bin/
 Requires [Rust](https://rustup.rs/):
 
 ```bash
-cargo install --git https://github.com/YOURUSER/bambutop.git
+cargo install --git https://github.com/rhoopr/bambutop.git
 ```
 
 ## Configuration
