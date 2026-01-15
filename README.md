@@ -1,5 +1,11 @@
 # BambuTop
 
+[![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Bambu Lab](https://img.shields.io/badge/Bambu%20Lab-00AE42?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN3Y2YzAgNS41NSAzLjg0IDEwLjc0IDEwIDEyIDYuMTYtMS4yNiAxMC02LjQ1IDEwLTEyVjdsLTEwLTV6Ii8+PC9zdmc+)](https://bambulab.com/)
+[![TUI](https://img.shields.io/badge/TUI-Terminal%20App-orange)](https://github.com/rhoopr/bambutop)
+[![Vibe Coded](https://img.shields.io/badge/vibe-coded%20%E2%9C%A8-ff69b4)](https://en.wikipedia.org/wiki/Vibe_coding)
+
 A terminal-based status monitor for Bambu Labs printers. Like htop, but for your 3D printer.
 
 ![BambuTop Screenshot](https://github.com/user-attachments/assets/placeholder.png)
