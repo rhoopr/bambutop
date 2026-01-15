@@ -112,4 +112,4 @@ Create the config file as described in the Configuration section above.
 
 ## License
 
-MIT
+GPLv3 - See [LICENSE](LICENSE) for details.
