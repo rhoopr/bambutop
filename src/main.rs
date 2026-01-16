@@ -3,6 +3,7 @@ mod config;
 mod mqtt;
 mod printer;
 mod ui;
+mod wizard;
 
 use anyhow::Result;
 use app::App;
@@ -33,25 +34,57 @@ struct Args {
     /// Printer access code (overrides config file)
     #[arg(short, long)]
     access_code: Option<String>,
+
+    /// Delete config and run setup wizard
+    #[arg(long)]
+    reset: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Load config
-    let mut config = config::Config::load()?;
+    // Handle --reset flag
+    if args.reset {
+        let config_path = config::Config::config_path()?;
+        if config_path.exists() {
+            std::fs::remove_file(&config_path)?;
+        }
+    }
 
-    // Override with CLI args
-    if let Some(ip) = args.ip {
-        config.printer.ip = ip;
-    }
-    if let Some(serial) = args.serial {
-        config.printer.serial = serial;
-    }
-    if let Some(access_code) = args.access_code {
-        config.printer.access_code = access_code;
-    }
+    // Build config from CLI args, config file, or wizard
+    let config = if let (Some(ip), Some(serial), Some(access_code)) =
+        (args.ip.as_ref(), args.serial.as_ref(), args.access_code.as_ref())
+    {
+        // All CLI args provided - use them directly without saving
+        config::Config {
+            printer: config::PrinterConfig {
+                ip: ip.clone(),
+                serial: serial.clone(),
+                access_code: access_code.clone(),
+                port: 8883,
+            },
+        }
+    } else {
+        // Load from file or run wizard
+        let mut config = match config::Config::load()? {
+            Some(config) => config,
+            None => wizard::run_setup_wizard()?,
+        };
+
+        // Override with any provided CLI args
+        if let Some(ip) = args.ip {
+            config.printer.ip = ip;
+        }
+        if let Some(serial) = args.serial {
+            config.printer.serial = serial;
+        }
+        if let Some(access_code) = args.access_code {
+            config.printer.access_code = access_code;
+        }
+
+        config
+    };
 
     // Setup terminal
     enable_raw_mode()?;
