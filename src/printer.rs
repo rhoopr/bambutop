@@ -353,6 +353,19 @@ impl PrinterState {
         }
     }
 
+    /// Returns true if this printer model has a chamber temperature sensor.
+    /// X1 series, P2S, and H2 series have sensors.
+    /// P1P, P1S, A1, and A1 Mini do not.
+    pub fn has_chamber_temp_sensor(&self) -> bool {
+        let model = self.printer_model.to_uppercase();
+        model.contains("X1C")
+            || model.contains("X1E")
+            || model.contains("P2S")
+            || model.contains("H2C")
+            || model.contains("H2S")
+            || model.contains("H2D")
+    }
+
     fn update_ams(&mut self, report: &AmsReport) {
         let mut ams_state = self.ams.take().unwrap_or_default();
 

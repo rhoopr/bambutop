@@ -37,16 +37,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let temps = &app.printer_state.temperatures;
     let speeds = &app.printer_state.speeds;
 
-    // Chamber temperature (at top)
-    let chamber_line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled("Chamber: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{:.0}°C", temps.chamber),
-            Style::default().fg(Color::Cyan),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(chamber_line), chunks[0]);
+    // Chamber temperature (at top) - only show if printer has a sensor
+    if app.printer_state.has_chamber_temp_sensor() {
+        let chamber_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Chamber: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.0}°C", temps.chamber),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(chamber_line), chunks[0]);
+    }
 
     // Fan speeds
     let fan_line = Line::from(vec![
