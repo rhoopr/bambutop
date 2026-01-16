@@ -30,6 +30,7 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
             )));
 
             // Humidity line with grade widget
+            // Bambu humidity scale: 5=Dry(A), 4(B), 3(C), 2(D), 1=Wet(E)
             let current_grade = match unit.humidity {
                 5 => 'A',
                 4 => 'B',
@@ -129,10 +130,6 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn parse_hex_color(hex: &str) -> Color {
-    if hex.len() < 6 {
-        return Color::White;
-    }
-
     let hex = hex.trim_start_matches('#');
     if hex.len() < 6 {
         return Color::White;

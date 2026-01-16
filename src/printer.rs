@@ -464,35 +464,59 @@ fn model_from_serial(serial: &str) -> String {
         return "Bambu Printer".to_string();
     }
 
+    // Prefixes from: https://wiki.bambulab.com/en/general/find-sn
+    // Note: 01P/01S are counterintuitively swapped (01P=P1S, 01S=P1P)
     match &serial[..3] {
-        "01P" => "Bambu Lab P1P".to_string(),
-        "01S" => "Bambu Lab P1S".to_string(),
-        "00M" => "Bambu Lab X1".to_string(),
-        "00W" => "Bambu Lab X1C".to_string(),
+        // P1 Series
+        "01P" => "Bambu Lab P1S".to_string(),
+        "01S" => "Bambu Lab P1P".to_string(),
+        "22E" => "Bambu Lab P2S".to_string(),
+        // X1 Series
+        "00M" => "Bambu Lab X1C".to_string(),
         "03W" => "Bambu Lab X1E".to_string(),
-        "030" => "Bambu Lab A1".to_string(),
-        "039" => "Bambu Lab A1 Mini".to_string(),
+        // A1 Series
+        "030" => "Bambu Lab A1 Mini".to_string(),
+        "039" => "Bambu Lab A1".to_string(),
+        // H2 Series
+        "31B" => "Bambu Lab H2C".to_string(),
+        "093" => "Bambu Lab H2S".to_string(),
+        "094" => "Bambu Lab H2D".to_string(),
+        "239" => "Bambu Lab H2D Pro".to_string(),
         _ => "Bambu Printer".to_string(),
     }
 }
 
 fn model_from_hw_ver(hw_ver: &str) -> String {
     // hw_ver might contain model info like "AP05" for A1, etc.
+    // Check more specific patterns first to avoid substring false matches
     let hw = hw_ver.to_uppercase();
+
+    // P Series
     if hw.contains("P1P") {
         "Bambu Lab P1P".to_string()
     } else if hw.contains("P1S") {
         "Bambu Lab P1S".to_string()
+    } else if hw.contains("P2S") {
+        "Bambu Lab P2S".to_string()
+    // X Series
     } else if hw.contains("X1C") {
         "Bambu Lab X1C".to_string()
     } else if hw.contains("X1E") {
         "Bambu Lab X1E".to_string()
-    } else if hw.contains("X1") {
-        "Bambu Lab X1".to_string()
-    } else if hw.contains("A1M") {
+    // A Series (check A1M before A1)
+    } else if hw.contains("A1M") || hw.contains("A1 MINI") {
         "Bambu Lab A1 Mini".to_string()
     } else if hw.contains("A1") {
         "Bambu Lab A1".to_string()
+    // H2 Series (check longer patterns first)
+    } else if hw.contains("H2D PRO") {
+        "Bambu Lab H2D Pro".to_string()
+    } else if hw.contains("H2D") {
+        "Bambu Lab H2D".to_string()
+    } else if hw.contains("H2C") {
+        "Bambu Lab H2C".to_string()
+    } else if hw.contains("H2S") {
+        "Bambu Lab H2S".to_string()
     } else {
         // Return hw_ver itself if we can't map it
         format!("Bambu {}", hw_ver)
