@@ -30,4 +30,3 @@ clap = { version = "4", features = ["derive"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "1"

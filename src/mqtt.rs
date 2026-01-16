@@ -62,7 +62,7 @@ impl ServerCertVerifier for NoVerifier {
 pub enum MqttEvent {
     Connected,
     Disconnected,
-    StateUpdate(PrinterState),
+    StateUpdate(Box<PrinterState>),
     Error(String),
 }
 
@@ -113,7 +113,7 @@ impl MqttClient {
                                 Ok(msg) => {
                                     state.update_from_message(&msg);
                                     let _ = tx_clone
-                                        .send(MqttEvent::StateUpdate(state.clone()))
+                                        .send(MqttEvent::StateUpdate(Box::new(state.clone())))
                                         .await;
                                 }
                                 Err(_) => {

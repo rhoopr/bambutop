@@ -94,7 +94,7 @@ async fn run_app(
     app: &mut App,
     mqtt_rx: &mut tokio::sync::mpsc::Receiver<mqtt::MqttEvent>,
     tick_rate: Duration,
-    _mqtt_client: &MqttClient,
+    _mqtt_client: &MqttClient, // Kept alive to maintain MQTT connection
 ) -> Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;

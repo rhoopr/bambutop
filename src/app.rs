@@ -33,7 +33,7 @@ impl App {
                 self.connected = false;
             }
             MqttEvent::StateUpdate(state) => {
-                self.printer_state = state;
+                self.printer_state = *state;
                 self.printer_state.connected = true;
                 self.last_update = Some(Instant::now());
             }

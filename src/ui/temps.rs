@@ -97,57 +97,34 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(nozzle_gauge, chunks[4]);
 
     // Bed temperature
-    render_temp_gauge(
-        frame,
-        chunks[6],
-        chunks[7],
-        "Bed",
-        temps.bed,
-        temps.bed_target,
-        120.0,
-        Color::Magenta,
-    );
-}
-
-fn render_temp_gauge(
-    frame: &mut Frame,
-    text_area: Rect,
-    gauge_area: Rect,
-    label: &str,
-    current: f32,
-    target: f32,
-    max: f32,
-    color: Color,
-) {
-    let temp_text = if target > 0.0 {
-        format!(" {}: {:.0}°C / {:.0}°C", label, current, target)
-    } else {
-        format!(" {}: {:.0}°C", label, current)
-    };
-
-    let temp_color = if target > 0.0 && (current - target).abs() < 5.0 {
+    let bed_color = if temps.bed_target > 0.0 && (temps.bed - temps.bed_target).abs() < 5.0 {
         Color::Green
-    } else if current > 50.0 {
-        color
+    } else if temps.bed > 50.0 {
+        Color::Magenta
     } else {
         Color::DarkGray
     };
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(temp_text, Style::default().fg(temp_color))),
-        text_area,
-    );
-
-    let ratio = if target > 0.0 {
-        (current / target).min(1.0) as f64
+    let bed_text = if temps.bed_target > 0.0 {
+        format!(" Bed: {:.0}°C / {:.0}°C", temps.bed, temps.bed_target)
     } else {
-        (current / max) as f64
+        format!(" Bed: {:.0}°C", temps.bed)
     };
 
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(temp_color).bg(Color::DarkGray))
-        .ratio(ratio)
-        .label("");
+    frame.render_widget(
+        Paragraph::new(Span::styled(bed_text, Style::default().fg(bed_color))),
+        chunks[6],
+    );
 
-    frame.render_widget(gauge, gauge_area);
+    // Bed gauge
+    let bed_ratio = if temps.bed_target > 0.0 {
+        (temps.bed / temps.bed_target).min(1.0) as f64
+    } else {
+        (temps.bed / 120.0) as f64
+    };
+    let bed_gauge = Gauge::default()
+        .gauge_style(Style::default().fg(bed_color).bg(Color::DarkGray))
+        .ratio(bed_ratio)
+        .label("");
+    frame.render_widget(bed_gauge, chunks[7]);
 }
