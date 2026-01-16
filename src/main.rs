@@ -56,15 +56,17 @@ async fn main() -> Result<()> {
     let config = if let (Some(ip), Some(serial), Some(access_code)) =
         (args.ip.as_ref(), args.serial.as_ref(), args.access_code.as_ref())
     {
-        // All CLI args provided - use them directly without saving
-        config::Config {
+        // All CLI args provided - use them and save to config
+        let config = config::Config {
             printer: config::PrinterConfig {
                 ip: ip.clone(),
                 serial: serial.clone(),
                 access_code: access_code.clone(),
                 port: 8883,
             },
-        }
+        };
+        config.save()?;
+        config
     } else {
         // Load from file or run wizard
         let mut config = match config::Config::load()? {
