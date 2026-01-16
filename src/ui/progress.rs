@@ -32,14 +32,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let print_status = &app.printer_state.print_status;
 
-    // Print job name
-    let job_name = if print_status.gcode_file.is_empty() {
-        "No print job".to_string()
-    } else {
-        print_status.gcode_file
-            .trim_end_matches(".3mf")
-            .trim_end_matches(".gcode")
-            .to_string()
+    // Print job name - use smart display_name() that prefers actual project names
+    let job_name = {
+        let name = print_status.display_name();
+        if name.is_empty() {
+            "No print job".to_string()
+        } else {
+            name
+        }
     };
 
     let file_line = Line::from(vec![

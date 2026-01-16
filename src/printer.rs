@@ -20,12 +20,70 @@ pub struct PrinterState {
 pub struct PrintStatus {
     pub gcode_file: String,
     pub subtask_name: String,
+    pub project_id: String,
+    pub task_id: String,
     pub progress: u8,
     pub layer_num: u32,
     pub total_layers: u32,
     pub remaining_time_mins: u32,
     pub gcode_state: String,
     pub print_type: String,
+}
+
+impl PrintStatus {
+    /// Returns the best available display name for the print job.
+    /// For cloud prints with only slicer profile info, shows "Cloud: <profile>".
+    /// For local prints, shows the actual filename.
+    pub fn display_name(&self) -> String {
+        let subtask = self.clean_name(&self.subtask_name);
+        let gcode = self.clean_name(&self.gcode_file);
+
+        // If subtask_name looks like an actual name (not slicer settings), use it
+        if !subtask.is_empty() && !self.looks_like_slicer_profile(&subtask) {
+            return subtask;
+        }
+
+        // If gcode_file looks like an actual name, use it
+        if !gcode.is_empty() && !self.looks_like_slicer_profile(&gcode) {
+            return gcode;
+        }
+
+        // We only have slicer profile info - format it nicely
+        let profile = if !subtask.is_empty() { &subtask } else { &gcode };
+
+        if profile.is_empty() {
+            return String::new();
+        }
+
+        // For cloud prints, prefix with "Cloud:" to make it clear
+        if self.print_type == "cloud" {
+            format!("Cloud: {}", profile)
+        } else {
+            profile.to_string()
+        }
+    }
+
+    fn clean_name(&self, name: &str) -> String {
+        name.trim()
+            .trim_end_matches(".3mf")
+            .trim_end_matches(".gcode")
+            .trim_end_matches(".gcode.3mf")
+            .to_string()
+    }
+
+    fn looks_like_slicer_profile(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+
+        // Pattern: "0.2mm layer, 2 walls, 15% infill" style
+        if lower.contains("mm layer") || lower.contains("% infill") || lower.contains(" walls") {
+            return true;
+        }
+
+        // Pattern: contains multiple common profile terms
+        let profile_terms = ["pla", "petg", "abs", "tpu", "draft", "quality", "strength"];
+        let term_count = profile_terms.iter().filter(|t| lower.contains(*t)).count();
+        term_count >= 2
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -93,6 +151,10 @@ pub struct PrintReport {
     // Print job info
     pub gcode_file: Option<String>,
     pub subtask_name: Option<String>,
+    pub project_id: Option<String>,
+    pub task_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub subtask_id: Option<String>,
     #[serde(rename = "mc_percent")]
     pub progress: Option<u8>,
     pub layer_num: Option<u32>,
@@ -181,6 +243,12 @@ impl PrinterState {
         }
         if let Some(v) = &report.subtask_name {
             self.print_status.subtask_name = v.clone();
+        }
+        if let Some(v) = &report.project_id {
+            self.print_status.project_id = v.clone();
+        }
+        if let Some(v) = &report.task_id {
+            self.print_status.task_id = v.clone();
         }
         if let Some(v) = report.progress {
             self.print_status.progress = v;
