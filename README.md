@@ -8,7 +8,7 @@
 
 A terminal-based status monitor for Bambu Labs printers. Like htop, but for your 3D printer.
 
-![BambuTop Screenshot](https://github.com/user-attachments/assets/placeholder.png)
+![BambuTop Screenshot](screenshot.png)
 
 ## Features
 
