@@ -62,9 +62,15 @@ cargo install --git https://github.com/rhoopr/bambutop.git
 
 ## Configuration
 
-Create a config file at:
-- **macOS:** `~/Library/Application Support/bambutop/config.toml`
-- **Linux:** `~/.config/bambutop/config.toml`
+On first run, BambuTop will launch a setup wizard to configure your printer connection. The config is saved to `~/.config/bambutop/config.toml`.
+
+You can also run with command-line flags to skip the config file entirely:
+
+```bash
+bambutop --ip 192.168.1.100 --serial YOUR_SERIAL --access-code YOUR_CODE
+```
+
+Or create the config file manually:
 
 ```toml
 [printer]
@@ -85,6 +91,15 @@ access_code = "YOUR_ACCESS_CODE"
 bambutop
 ```
 
+### Command-Line Options
+
+| Flag | Description |
+|------|-------------|
+| `--ip <IP>` | Printer IP address |
+| `--serial <SERIAL>` | Printer serial number |
+| `--access-code <CODE>` | Printer access code |
+| `--reset` | Delete config and re-run setup wizard |
+
 ### Keyboard Shortcuts
 
 | Key | Action |
@@ -97,9 +112,6 @@ bambutop
 - Your printer must be on the same network as your computer
 
 ## Troubleshooting
-
-**"Config file not found"**
-Create the config file as described in the Configuration section above.
 
 **"MQTT error: connection refused"**
 - Verify your printer's IP address is correct
