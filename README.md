@@ -3,13 +3,11 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest)   [![Homebrew](https://img.shields.io/badge/homebrew-todo-orange?logo=homebrew)](#) 
 
- [![Vibe Coded](https://img.shields.io/badge/vibe-coded%20%E2%9C%A8-ff69b4)](#) [![Claude Code](https://img.shields.io/badge/Claude%20Code-D97757?logo=claude&logoColor=fff)](https://claude.com/product/claude-code) [![Bambu Lab](https://img.shields.io/badge/Bambu%20Lab-00AE42?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN3Y2YzAgNS41NSAzLjg0IDEwLjc0IDEwIDEyIDYuMTYtMS4yNiAxMC02LjQ1IDEwLTEyVjdsLTEwLTV6Ii8+PC9zdmc+)](https://bambulab.com/) [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/) [![TUI](https://img.shields.io/badge/TUI-Terminal%20App-orange)](https://github.com/rhoopr/bambutop)
+ [![Vibe Coded](https://img.shields.io/badge/vibe-coded%20%E2%9C%A8-ff69b4)](#) [![Claude Code](https://img.shields.io/badge/Claude%20Code-D97757?logo=claude&logoColor=fff)](https://claude.com/product/claude-code) [![Bambu Lab](https://img.shields.io/badge/Bambu%20Lab-00AE42?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN3Y2YzAgNS41NSAzLjg0IDEwLjc0IDEwIDEyIDYuMTYtMS4yNiAxMC02LjQ1IDEwLTEyVjdsLTEwLTV6Ii8+PC9zdmc+)](https://bambulab.com/) [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/) [![TUI](https://img.shields.io/badge/TUI-Terminal%20App-orange)](#)
 
 A terminal-based status monitor for Bambu Lab printers. top/htop/btop/*top, but for your 3D printer. 
 
-![BambuTop Screenshot](screenshot.png)<p align=center>
-(Screenshot in [![Ghostty](https://custom-icon-badges.demolab.com/badge/Ghostty-0000ff?logo=ghostty_term)](#))
-</p>
+![BambuTop Screenshot](screenshot.png)<p align=center>Screenshot in [![Ghostty](https://custom-icon-badges.demolab.com/badge/Ghostty-0000ff?logo=ghostty_term)](https://github.com/ghostty-org/ghostty)</p>
 
 ## Features
 
