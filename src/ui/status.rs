@@ -120,10 +120,8 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
                     is_active_unit && ams.current_tray == Some(tray.id);
                 let marker = if is_active_tray { "▶" } else { " " };
 
-                // Show "?%" for unknown remaining (0 often means not reported)
-                let remaining_text = if tray.remaining == 0 && !tray.material.is_empty() {
-                    " ?%".to_string()
-                } else if tray.material.is_empty() {
+                // Show percentage if reported, hide if unknown (0 often means not reported)
+                let remaining_text = if tray.remaining == 0 || tray.material.is_empty() {
                     "".to_string()
                 } else {
                     format!(" {}%", tray.remaining)

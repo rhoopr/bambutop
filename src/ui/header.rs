@@ -1,6 +1,6 @@
 use crate::app::App;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -53,6 +53,7 @@ fn render_status_box(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
+
     frame.render_widget(Paragraph::new(status_line), inner);
 }
 
@@ -60,7 +61,7 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
     let has_errors = !app.printer_state.hms_errors.is_empty() || app.error_message.is_some();
 
     let border_color = if has_errors { Color::Red } else { Color::Green };
-    let title = if has_errors { " Errors " } else { " System " };
+    let title = if has_errors { " HMS Errors " } else { " HMS Status " };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -70,6 +71,13 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Split inner area: left for status, right for WiFi
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(22)])
+        .split(inner);
+
+    // Left side: status messages
     let mut lines: Vec<Line> = Vec::new();
 
     if let Some(err) = &app.error_message {
@@ -90,16 +98,21 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
             ]));
         }
     } else {
-        // Show WiFi signal and system status on the same line
-        let wifi_spans = render_wifi_signal(&app.printer_state.wifi_signal);
-        let mut line_spans = vec![Span::raw(" ")];
-        line_spans.extend(wifi_spans);
-        line_spans.push(Span::raw("  "));
-        line_spans.push(Span::styled("All systems normal", Style::default().fg(Color::Green)));
-        lines.push(Line::from(line_spans));
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("All systems normal", Style::default().fg(Color::Green)),
+        ]));
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), cols[0]);
+
+    // Right side: WiFi indicator
+    let wifi_spans = render_wifi_signal(&app.printer_state.wifi_signal);
+    let wifi_line = Line::from(wifi_spans);
+    frame.render_widget(
+        Paragraph::new(wifi_line).alignment(Alignment::Right),
+        cols[1],
+    );
 }
 
 /// Renders WiFi signal with visual bars and color coding.
@@ -107,8 +120,8 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
 fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
     if wifi_signal.is_empty() {
         return vec![
-            Span::styled("WiFi: ", Style::default().fg(Color::Gray)),
-            Span::styled("--", Style::default().fg(Color::Gray)),
+            Span::styled("WiFi: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("--", Style::default().fg(Color::DarkGray)),
         ];
     }
 
@@ -133,7 +146,7 @@ fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
     };
 
     vec![
-        Span::styled("WiFi: ", Style::default().fg(Color::Gray)),
+        Span::styled("WiFi: ", Style::default().fg(Color::DarkGray)),
         Span::styled(bars.to_string(), Style::default().fg(color)),
         Span::raw(" "),
         Span::styled(wifi_signal.to_string(), Style::default().fg(color)),
