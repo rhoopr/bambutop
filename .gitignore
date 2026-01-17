@@ -11,3 +11,7 @@ TODO.md
 .vscode/
 *.swp
 *.swo
+# Claudallel artifacts
+claudallel-worktrees/
+claudallel-logs/
+.claudallel-state.json
