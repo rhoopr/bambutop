@@ -11,7 +11,7 @@ pub struct PrinterState {
     pub speeds: Speeds,
     pub ams: Option<AmsState>,
     pub lights: LightState,
-    pub wifi_signal: i32,
+    pub wifi_signal: String,
     pub gcode_state: String,
     pub hms_errors: Vec<HmsError>,
 }
@@ -312,11 +312,9 @@ impl PrinterState {
             }
         }
 
-        // WiFi signal - may come as "-65dBm" or just "-65" or as percentage
+        // WiFi signal - store raw string value (e.g., "-45dBm")
         if let Some(v) = &report.wifi_signal {
-            // Strip non-numeric chars except minus sign
-            let cleaned: String = v.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
-            self.wifi_signal = cleaned.parse().unwrap_or(0);
+            self.wifi_signal = v.clone();
         }
 
         // AMS
