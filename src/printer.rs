@@ -106,7 +106,10 @@ pub struct Speeds {
 #[derive(Debug, Clone, Default)]
 pub struct AmsState {
     pub units: Vec<AmsUnit>,
+    /// The currently active tray slot (0-3 within a unit)
     pub current_tray: Option<u8>,
+    /// The currently active AMS unit index (0-3)
+    pub current_unit: Option<u8>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,6 +117,8 @@ pub struct AmsUnit {
     pub id: u8,
     pub humidity: u8,
     pub trays: Vec<AmsTray>,
+    /// True if this is an AMS Lite unit (2 trays instead of 4)
+    pub is_lite: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -367,17 +372,29 @@ impl PrinterState {
     fn update_ams(&mut self, report: &AmsReport) {
         let mut ams_state = self.ams.take().unwrap_or_default();
 
+        // Parse tray_now to determine both active unit and tray slot
+        // Format: tray_now is a combined value where:
+        // - For AMS: value = (unit_id * 4) + tray_id (e.g., "5" = unit 1, tray 1)
+        // - Special values: "254" = external spool, "255" = no tray selected
         if let Some(tray) = &report.tray_now {
-            ams_state.current_tray = tray.parse().ok();
+            if let Ok(tray_val) = tray.parse::<u8>() {
+                if tray_val < 254 {
+                    // Calculate unit and slot from combined tray value
+                    ams_state.current_unit = Some(tray_val / 4);
+                    ams_state.current_tray = Some(tray_val % 4);
+                } else {
+                    // External spool or no selection
+                    ams_state.current_unit = None;
+                    ams_state.current_tray = None;
+                }
+            }
         }
 
         if let Some(units) = &report.ams {
             ams_state.units = units
                 .iter()
-                .map(|u| AmsUnit {
-                    id: u.id.parse().unwrap_or(0),
-                    humidity: u.humidity.parse().unwrap_or(0),
-                    trays: u
+                .map(|u| {
+                    let trays: Vec<AmsTray> = u
                         .tray
                         .as_ref()
                         .map(|trays| {
@@ -391,7 +408,18 @@ impl PrinterState {
                                 })
                                 .collect()
                         })
-                        .unwrap_or_default(),
+                        .unwrap_or_default();
+
+                    // Detect AMS Lite: has only 2 tray slots instead of 4
+                    // AMS Lite units report fewer trays or have humidity value of 0
+                    let is_lite = trays.len() <= 2 && !trays.is_empty();
+
+                    AmsUnit {
+                        id: u.id.parse().unwrap_or(0),
+                        humidity: u.humidity.parse().unwrap_or(0),
+                        trays,
+                        is_lite,
+                    }
                 })
                 .collect();
         }
