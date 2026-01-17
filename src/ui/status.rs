@@ -19,55 +19,92 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     if let Some(ams) = &app.printer_state.ams {
+        let num_units = ams.units.len();
+
         for unit in &ams.units {
+            // Check if this unit is currently active
+            let is_active_unit = ams.current_unit == Some(unit.id);
+
+            // Separator line between units (only if multiple units)
+            if unit.id > 0 && num_units > 1 {
+                lines.push(Line::from(Span::styled(
+                    "  ────────────────────────",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
             // Spacer above unit
             lines.push(Line::from(""));
 
-            // Unit header
-            lines.push(Line::from(Span::styled(
-                format!(" Unit {}", unit.id + 1),
-                Style::default().fg(Color::DarkGray),
-            )));
-
-            // Humidity line with grade widget
-            // Bambu humidity scale: 5=Dry(A), 4(B), 3(C), 2(D), 1=Wet(E)
-            let current_grade = match unit.humidity {
-                5 => 'A',
-                4 => 'B',
-                3 => 'C',
-                2 => 'D',
-                1 => 'E',
-                _ => '?',
+            // Unit header with active indicator and Lite badge
+            let unit_label = if unit.is_lite {
+                format!(" Unit {} [Lite]", unit.id + 1)
+            } else {
+                format!(" Unit {}", unit.id + 1)
             };
 
-            let mut humidity_spans = vec![
-                Span::styled("   Humidity: ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Dry ", Style::default().fg(Color::DarkGray)),
-                Span::styled("◆ ", Style::default().fg(Color::DarkGray)),
-            ];
+            let unit_style = if is_active_unit {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
 
-            for (i, grade) in ['A', 'B', 'C', 'D', 'E'].iter().enumerate() {
-                let grade_color = match grade {
-                    'A' | 'B' => Color::Green,
-                    'C' => Color::Yellow,
-                    'D' => Color::Rgb(255, 165, 0), // Orange
-                    'E' => Color::Red,
-                    _ => Color::DarkGray,
-                };
-                let style = if *grade == current_grade {
-                    Style::default().fg(grade_color).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                humidity_spans.push(Span::styled(grade.to_string(), style));
-                if i < 4 {
-                    humidity_spans.push(Span::styled("-", Style::default().fg(Color::DarkGray)));
-                }
+            let mut header_spans = vec![];
+            if is_active_unit {
+                header_spans.push(Span::styled("▶", Style::default().fg(Color::Green)));
+            } else {
+                header_spans.push(Span::styled(" ", Style::default()));
             }
+            header_spans.push(Span::styled(unit_label, unit_style));
 
-            humidity_spans.push(Span::styled(" ◆", Style::default().fg(Color::DarkGray)));
-            humidity_spans.push(Span::styled(" Wet", Style::default().fg(Color::DarkGray)));
-            lines.push(Line::from(humidity_spans));
+            lines.push(Line::from(header_spans));
+
+            // Humidity line with grade widget (skip for AMS Lite which has no humidity sensor)
+            if !unit.is_lite {
+                // Bambu humidity scale: 5=Dry(A), 4(B), 3(C), 2(D), 1=Wet(E)
+                let current_grade = match unit.humidity {
+                    5 => 'A',
+                    4 => 'B',
+                    3 => 'C',
+                    2 => 'D',
+                    1 => 'E',
+                    _ => '?',
+                };
+
+                let mut humidity_spans = vec![
+                    Span::styled("   Humidity: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Dry ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("◆ ", Style::default().fg(Color::DarkGray)),
+                ];
+
+                for (i, grade) in ['A', 'B', 'C', 'D', 'E'].iter().enumerate() {
+                    let grade_color = match grade {
+                        'A' | 'B' => Color::Green,
+                        'C' => Color::Yellow,
+                        'D' => Color::Rgb(255, 165, 0), // Orange
+                        'E' => Color::Red,
+                        _ => Color::DarkGray,
+                    };
+                    let style = if *grade == current_grade {
+                        Style::default()
+                            .fg(grade_color)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    humidity_spans.push(Span::styled(grade.to_string(), style));
+                    if i < 4 {
+                        humidity_spans
+                            .push(Span::styled("-", Style::default().fg(Color::DarkGray)));
+                    }
+                }
+
+                humidity_spans.push(Span::styled(" ◆", Style::default().fg(Color::DarkGray)));
+                humidity_spans.push(Span::styled(" Wet", Style::default().fg(Color::DarkGray)));
+                lines.push(Line::from(humidity_spans));
+            }
 
             // Filament header
             lines.push(Line::from(Span::styled(
@@ -78,8 +115,10 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
             // Filament slots
             for tray in &unit.trays {
                 let color = parse_hex_color(&tray.color);
-                let is_active = ams.current_tray == Some(tray.id);
-                let marker = if is_active { ">" } else { " " };
+                // A tray is active if both the unit and tray slot match
+                let is_active_tray =
+                    is_active_unit && ams.current_tray == Some(tray.id);
+                let marker = if is_active_tray { "▶" } else { " " };
 
                 // Show "?%" for unknown remaining (0 often means not reported)
                 let remaining_text = if tray.remaining == 0 && !tray.material.is_empty() {
@@ -96,15 +135,16 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
                     _ => Color::Green,
                 };
 
+                let slot_style = if is_active_tray {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("     {}[{}] ", marker, tray.id + 1),
-                        if is_active {
-                            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::DarkGray)
-                        },
-                    ),
+                    Span::styled(format!("    {}[{}] ", marker, tray.id + 1), slot_style),
                     Span::styled("██", Style::default().fg(color)),
                     Span::raw(" "),
                     Span::styled(
