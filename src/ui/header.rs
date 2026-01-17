@@ -90,11 +90,52 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
             ]));
         }
     } else {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("All systems normal", Style::default().fg(Color::Green)),
-        ]));
+        // Show WiFi signal and system status on the same line
+        let wifi_spans = render_wifi_signal(&app.printer_state.wifi_signal);
+        let mut line_spans = vec![Span::raw(" ")];
+        line_spans.extend(wifi_spans);
+        line_spans.push(Span::raw("  "));
+        line_spans.push(Span::styled("All systems normal", Style::default().fg(Color::Green)));
+        lines.push(Line::from(line_spans));
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Renders WiFi signal with visual bars and color coding.
+/// Good signal: > -50dBm (green), Medium: -50 to -70dBm (yellow), Weak: < -70dBm (red)
+fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
+    if wifi_signal.is_empty() {
+        return vec![
+            Span::styled("WiFi: ", Style::default().fg(Color::Gray)),
+            Span::styled("--", Style::default().fg(Color::Gray)),
+        ];
+    }
+
+    // Parse dBm value from string (e.g., "-45dBm" or "-45")
+    let dbm: i32 = wifi_signal
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect::<String>()
+        .parse()
+        .unwrap_or(-100);
+
+    // Determine signal strength and color
+    let (color, bars) = if dbm > -50 {
+        // Strong signal
+        (Color::Green, "\u{2582}\u{2584}\u{2586}\u{2588}")
+    } else if dbm > -70 {
+        // Medium signal
+        (Color::Yellow, "\u{2582}\u{2584}\u{2586} ")
+    } else {
+        // Weak signal
+        (Color::Red, "\u{2582}\u{2584}  ")
+    };
+
+    vec![
+        Span::styled("WiFi: ", Style::default().fg(Color::Gray)),
+        Span::styled(bars.to_string(), Style::default().fg(color)),
+        Span::raw(" "),
+        Span::styled(wifi_signal.to_string(), Style::default().fg(color)),
+    ]
 }
