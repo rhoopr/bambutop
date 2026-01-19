@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use smallvec::SmallVec;
 
 /// WiFi signal threshold for strong signal (dBm)
 const WIFI_STRONG_THRESHOLD: i32 = -50;
@@ -91,7 +92,7 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
         .split(inner);
 
     // Left side: status messages (pre-allocate for typical case)
-    let mut lines: Vec<Line> = Vec::with_capacity(4);
+    let mut lines: SmallVec<[Line; 4]> = SmallVec::new();
 
     if let Some(err) = &app.error_message {
         lines.push(Line::from(vec![
@@ -117,7 +118,7 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines), cols[0]);
+    frame.render_widget(Paragraph::new(lines.into_vec()), cols[0]);
 
     // Right side: WiFi indicator
     let wifi_spans = render_wifi_signal(&app.printer_state.wifi_signal);
