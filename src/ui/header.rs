@@ -194,3 +194,76 @@ fn parse_dbm(s: &str) -> Option<i32> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod parse_dbm_tests {
+        use super::*;
+
+        #[test]
+        fn parses_negative_with_suffix() {
+            assert_eq!(parse_dbm("-45dBm"), Some(-45));
+            assert_eq!(parse_dbm("-70dBm"), Some(-70));
+        }
+
+        #[test]
+        fn parses_negative_without_suffix() {
+            assert_eq!(parse_dbm("-45"), Some(-45));
+            assert_eq!(parse_dbm("-100"), Some(-100));
+        }
+
+        #[test]
+        fn parses_positive_values() {
+            assert_eq!(parse_dbm("45"), Some(45));
+            assert_eq!(parse_dbm("0"), Some(0));
+        }
+
+        #[test]
+        fn returns_none_for_empty() {
+            assert_eq!(parse_dbm(""), None);
+        }
+
+        #[test]
+        fn returns_none_for_no_digits() {
+            assert_eq!(parse_dbm("dBm"), None);
+            assert_eq!(parse_dbm("-"), None);
+            assert_eq!(parse_dbm("abc"), None);
+        }
+
+        #[test]
+        fn handles_whitespace_in_value() {
+            // Digits are extracted regardless of surrounding text
+            assert_eq!(parse_dbm("Signal: -45 dBm"), Some(-45));
+        }
+
+        #[test]
+        fn saturates_on_overflow() {
+            // Very large numbers saturate instead of overflowing
+            let result = parse_dbm("99999999999999999999");
+            assert!(result.is_some());
+            // Should be saturated to i32::MAX
+            assert_eq!(result, Some(i32::MAX));
+        }
+
+        #[test]
+        fn handles_multiple_minus_signs() {
+            // Only the first minus before digits is used
+            assert_eq!(parse_dbm("--45"), Some(-45));
+        }
+
+        #[test]
+        fn concatenates_all_digit_sequences() {
+            // Documents behavior: all digits in the string are concatenated
+            // This matches the actual implementation behavior
+            assert_eq!(parse_dbm("-45abc67"), Some(-4567));
+        }
+
+        #[test]
+        fn minus_after_digits_is_ignored() {
+            // Minus sign only counts if before any digits
+            assert_eq!(parse_dbm("45-67"), Some(4567));
+        }
+    }
+}

@@ -193,7 +193,7 @@ pub struct MqttMessage {
 /// - Future feature development without re-discovering field names
 /// - Serde deserialization (unknown fields would otherwise cause errors)
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct PrintReport {
     // Print job info
     pub gcode_file: Option<String>,
@@ -585,5 +585,666 @@ fn model_from_serial(serial: &str) -> &'static str {
         "094" => "Bambu Lab H2D",
         "239" => "Bambu Lab H2D Pro",
         _ => "Bambu Printer",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod parse_fan_speed_tests {
+        use super::*;
+
+        #[test]
+        fn converts_zero() {
+            assert_eq!(parse_fan_speed("0"), Some(0));
+        }
+
+        #[test]
+        fn converts_max() {
+            assert_eq!(parse_fan_speed("15"), Some(100));
+        }
+
+        #[test]
+        fn converts_mid_values() {
+            // 7/15 * 100 = 46.67, truncated to 46
+            assert_eq!(parse_fan_speed("7"), Some(46));
+            // 8/15 * 100 = 53.33, truncated to 53
+            assert_eq!(parse_fan_speed("8"), Some(53));
+        }
+
+        #[test]
+        fn caps_values_above_15() {
+            // Values above 15 are capped to prevent overflow
+            assert_eq!(parse_fan_speed("20"), Some(100));
+            assert_eq!(parse_fan_speed("255"), Some(100));
+        }
+
+        #[test]
+        fn returns_none_for_invalid_input() {
+            assert_eq!(parse_fan_speed("invalid"), None);
+            assert_eq!(parse_fan_speed(""), None);
+            assert_eq!(parse_fan_speed("-1"), None);
+        }
+
+        #[test]
+        fn returns_none_for_whitespace() {
+            // Whitespace around numbers is not handled by parse()
+            assert_eq!(parse_fan_speed(" 10 "), None);
+            assert_eq!(parse_fan_speed(" 10"), None);
+            assert_eq!(parse_fan_speed("10 "), None);
+        }
+    }
+
+    mod parse_hex_color_tests {
+        use super::*;
+
+        #[test]
+        fn parses_with_hash_prefix() {
+            assert_eq!(parse_hex_color("#FF0000"), Some((255, 0, 0)));
+            assert_eq!(parse_hex_color("#00FF00"), Some((0, 255, 0)));
+            assert_eq!(parse_hex_color("#0000FF"), Some((0, 0, 255)));
+        }
+
+        #[test]
+        fn parses_without_hash_prefix() {
+            assert_eq!(parse_hex_color("FF0000"), Some((255, 0, 0)));
+            assert_eq!(parse_hex_color("00FF00"), Some((0, 255, 0)));
+        }
+
+        #[test]
+        fn parses_lowercase() {
+            assert_eq!(parse_hex_color("ff00ff"), Some((255, 0, 255)));
+            assert_eq!(parse_hex_color("#aabbcc"), Some((170, 187, 204)));
+        }
+
+        #[test]
+        fn returns_none_for_short_strings() {
+            assert_eq!(parse_hex_color("FF00"), None);
+            assert_eq!(parse_hex_color("#FFF"), None);
+            assert_eq!(parse_hex_color(""), None);
+        }
+
+        #[test]
+        fn returns_none_for_invalid_hex() {
+            assert_eq!(parse_hex_color("GGGGGG"), None);
+            assert_eq!(parse_hex_color("not-hex"), None);
+        }
+
+        #[test]
+        fn ignores_alpha_channel() {
+            // Only first 6 hex chars are used, alpha is ignored
+            assert_eq!(parse_hex_color("FF0000FF"), Some((255, 0, 0)));
+        }
+    }
+
+    mod format_hms_code_tests {
+        use super::*;
+
+        #[test]
+        fn returns_borrowed_for_known_codes() {
+            let result = format_hms_code(0x0700_0001);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "AMS: Filament runout");
+        }
+
+        #[test]
+        fn returns_owned_for_unknown_codes() {
+            let result = format_hms_code(0x9999_9999);
+            assert!(matches!(result, Cow::Owned(_)));
+            assert_eq!(result, "Error: 0x99999999");
+        }
+
+        #[test]
+        fn maps_common_error_codes() {
+            assert_eq!(format_hms_code(0x0300_0300), "Nozzle: Clogged");
+            assert_eq!(format_hms_code(0x0400_0001), "Bed: Temperature too high");
+            assert_eq!(format_hms_code(0x0C00_0002), "Print: Spaghetti detected");
+        }
+    }
+
+    mod model_from_serial_tests {
+        use super::*;
+
+        #[test]
+        fn identifies_p1_series() {
+            assert_eq!(model_from_serial("01P00A000000000"), "Bambu Lab P1S");
+            assert_eq!(model_from_serial("01S00A000000000"), "Bambu Lab P1P");
+        }
+
+        #[test]
+        fn identifies_x1_series() {
+            assert_eq!(model_from_serial("00M00A000000000"), "Bambu Lab X1C");
+            assert_eq!(model_from_serial("03W00A000000000"), "Bambu Lab X1E");
+        }
+
+        #[test]
+        fn identifies_a1_series() {
+            assert_eq!(model_from_serial("03000A000000000"), "Bambu Lab A1 Mini");
+            assert_eq!(model_from_serial("03900A000000000"), "Bambu Lab A1");
+        }
+
+        #[test]
+        fn returns_default_for_unknown() {
+            assert_eq!(model_from_serial("XXX00000000000"), "Bambu Printer");
+        }
+
+        #[test]
+        fn returns_default_for_short_serial() {
+            assert_eq!(model_from_serial("01"), "Bambu Printer");
+            assert_eq!(model_from_serial(""), "Bambu Printer");
+        }
+    }
+
+    mod display_name_tests {
+        use super::*;
+
+        #[test]
+        fn prefers_subtask_name_over_gcode_file() {
+            let status = PrintStatus {
+                subtask_name: "My Project".to_string(),
+                gcode_file: "some_file.gcode".to_string(),
+                ..Default::default()
+            };
+            assert_eq!(status.display_name(), "My Project");
+        }
+
+        #[test]
+        fn falls_back_to_gcode_file() {
+            let status = PrintStatus {
+                subtask_name: "".to_string(),
+                gcode_file: "My Model.gcode".to_string(),
+                ..Default::default()
+            };
+            assert_eq!(status.display_name(), "My Model");
+        }
+
+        #[test]
+        fn strips_file_extensions() {
+            let status = PrintStatus {
+                subtask_name: "Model.3mf".to_string(),
+                ..Default::default()
+            };
+            assert_eq!(status.display_name(), "Model");
+
+            let status2 = PrintStatus {
+                subtask_name: "Model.gcode".to_string(),
+                ..Default::default()
+            };
+            assert_eq!(status2.display_name(), "Model");
+
+            // Chained extension: .gcode.3mf
+            let status3 = PrintStatus {
+                subtask_name: "Model.gcode.3mf".to_string(),
+                ..Default::default()
+            };
+            assert_eq!(status3.display_name(), "Model");
+        }
+
+        #[test]
+        fn detects_slicer_profiles_with_cloud_prefix() {
+            let status = PrintStatus {
+                subtask_name: "0.2mm layer, 2 walls, 15% infill".to_string(),
+                gcode_file: "".to_string(),
+                print_type: "cloud".to_string(),
+                ..Default::default()
+            };
+            assert_eq!(
+                status.display_name(),
+                "Cloud: 0.2mm layer, 2 walls, 15% infill"
+            );
+        }
+
+        #[test]
+        fn slicer_profile_without_cloud_shows_raw() {
+            // Non-cloud print with only slicer profile info
+            let status = PrintStatus {
+                subtask_name: "0.2mm layer, 2 walls".to_string(),
+                gcode_file: "".to_string(),
+                print_type: "local".to_string(),
+                ..Default::default()
+            };
+            // Should show the profile as-is without "Cloud:" prefix
+            assert_eq!(status.display_name(), "0.2mm layer, 2 walls");
+        }
+
+        #[test]
+        fn returns_empty_when_no_name() {
+            let status = PrintStatus::default();
+            assert_eq!(status.display_name(), "");
+        }
+    }
+
+    mod looks_like_slicer_profile_tests {
+        use super::*;
+
+        #[test]
+        fn detects_layer_pattern() {
+            assert!(PrintStatus::looks_like_slicer_profile("0.2mm layer"));
+            assert!(PrintStatus::looks_like_slicer_profile(
+                "0.16mm Layer Height"
+            ));
+        }
+
+        #[test]
+        fn detects_infill_pattern() {
+            assert!(PrintStatus::looks_like_slicer_profile("15% infill"));
+            assert!(PrintStatus::looks_like_slicer_profile("20% Infill density"));
+        }
+
+        #[test]
+        fn detects_walls_pattern() {
+            assert!(PrintStatus::looks_like_slicer_profile("2 walls"));
+            assert!(PrintStatus::looks_like_slicer_profile("3 Walls"));
+        }
+
+        #[test]
+        fn detects_multiple_material_terms() {
+            assert!(PrintStatus::looks_like_slicer_profile("PLA Draft"));
+            assert!(PrintStatus::looks_like_slicer_profile("PETG Quality"));
+        }
+
+        #[test]
+        fn allows_normal_project_names() {
+            assert!(!PrintStatus::looks_like_slicer_profile("Benchy"));
+            assert!(!PrintStatus::looks_like_slicer_profile("Phone Stand v2"));
+            assert!(!PrintStatus::looks_like_slicer_profile("My Cool Model"));
+        }
+
+        #[test]
+        fn single_material_term_is_not_profile() {
+            // A single material mention shouldn't trigger profile detection
+            // (requires 2+ profile terms)
+            assert!(!PrintStatus::looks_like_slicer_profile("PLA"));
+            assert!(!PrintStatus::looks_like_slicer_profile("My PETG Model"));
+        }
+    }
+
+    mod update_from_message_tests {
+        use super::*;
+
+        #[test]
+        fn preserves_unmentioned_fields() {
+            let mut state = PrinterState::default();
+            state.print_status.gcode_file = "existing.gcode".to_string();
+            state.print_status.subtask_name = "My Project".to_string();
+
+            // Update with message that only has progress
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    progress: Some(50),
+                    ..Default::default()
+                }),
+            };
+            state.update_from_message(&msg);
+
+            // Original fields should be preserved
+            assert_eq!(state.print_status.gcode_file, "existing.gcode");
+            assert_eq!(state.print_status.subtask_name, "My Project");
+            // New field should be updated
+            assert_eq!(state.print_status.progress, 50);
+        }
+
+        #[test]
+        fn updates_temperatures() {
+            let mut state = PrinterState::default();
+
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    nozzle_temper: Some(215.5),
+                    nozzle_target_temper: Some(220.0),
+                    bed_temper: Some(60.0),
+                    bed_target_temper: Some(65.0),
+                    chamber_temper: Some(35.0),
+                    ..Default::default()
+                }),
+            };
+            state.update_from_message(&msg);
+
+            assert_eq!(state.temperatures.nozzle, 215.5);
+            assert_eq!(state.temperatures.nozzle_target, 220.0);
+            assert_eq!(state.temperatures.bed, 60.0);
+            assert_eq!(state.temperatures.bed_target, 65.0);
+            assert_eq!(state.temperatures.chamber, 35.0);
+        }
+
+        #[test]
+        fn updates_print_status_fields() {
+            let mut state = PrinterState::default();
+
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    gcode_file: Some("test.gcode".to_string()),
+                    subtask_name: Some("Test Print".to_string()),
+                    progress: Some(75),
+                    layer_num: Some(100),
+                    total_layer_num: Some(200),
+                    remaining_time: Some(45),
+                    gcode_state: Some("RUNNING".to_string()),
+                    print_type: Some("local".to_string()),
+                    ..Default::default()
+                }),
+            };
+            state.update_from_message(&msg);
+
+            assert_eq!(state.print_status.gcode_file, "test.gcode");
+            assert_eq!(state.print_status.subtask_name, "Test Print");
+            assert_eq!(state.print_status.progress, 75);
+            assert_eq!(state.print_status.layer_num, 100);
+            assert_eq!(state.print_status.total_layers, 200);
+            assert_eq!(state.print_status.remaining_time_mins, 45);
+            assert_eq!(state.print_status.gcode_state, "RUNNING");
+            assert_eq!(state.print_status.print_type, "local");
+        }
+
+        #[test]
+        fn updates_fan_speeds() {
+            let mut state = PrinterState::default();
+
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    cooling_fan_speed: Some("15".to_string()), // Max = 100%
+                    big_fan1_speed: Some("7".to_string()),     // ~46%
+                    big_fan2_speed: Some("0".to_string()),     // 0%
+                    ..Default::default()
+                }),
+            };
+            state.update_from_message(&msg);
+
+            assert_eq!(state.speeds.fan_speed, 100);
+            assert_eq!(state.speeds.aux_fan_speed, 46);
+            assert_eq!(state.speeds.chamber_fan_speed, 0);
+        }
+
+        #[test]
+        fn updates_lights() {
+            let mut state = PrinterState::default();
+
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    lights_report: Some(vec![
+                        LightReport {
+                            node: "chamber_light".to_string(),
+                            mode: "on".to_string(),
+                        },
+                        LightReport {
+                            node: "work_light".to_string(),
+                            mode: "off".to_string(),
+                        },
+                    ]),
+                    ..Default::default()
+                }),
+            };
+            state.update_from_message(&msg);
+
+            assert!(state.lights.chamber_light);
+            assert!(!state.lights.work_light);
+        }
+
+        #[test]
+        fn parses_hms_errors() {
+            let mut state = PrinterState::default();
+
+            // attr layout: [module (8 bits)][severity (8 bits)][reserved (16 bits)]
+            // module = (attr >> 24) & 0xFF
+            // severity = (attr >> 16) & 0xFF
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    hms: Some(vec![
+                        HmsReport {
+                            attr: 0x0102_0000, // module 1, severity 2
+                            code: 0x0700_0001, // AMS: Filament runout
+                        },
+                        HmsReport {
+                            attr: 0x0201_0000, // module 2, severity 1
+                            code: 0x9999_9999, // Unknown code
+                        },
+                    ]),
+                    ..Default::default()
+                }),
+            };
+            state.update_from_message(&msg);
+
+            assert_eq!(state.hms_errors.len(), 2);
+            assert_eq!(state.hms_errors[0].code, 0x0700_0001);
+            assert_eq!(state.hms_errors[0].module, 1);
+            assert_eq!(state.hms_errors[0].severity, 2);
+            assert_eq!(state.hms_errors[0].message, "AMS: Filament runout");
+            assert_eq!(state.hms_errors[1].module, 2);
+            assert_eq!(state.hms_errors[1].severity, 1);
+            assert_eq!(state.hms_errors[1].message, "Error: 0x99999999");
+        }
+
+        #[test]
+        fn handles_empty_message() {
+            let mut state = PrinterState::default();
+            state.print_status.progress = 50;
+
+            let msg = MqttMessage { print: None };
+            state.update_from_message(&msg);
+
+            // State should be unchanged
+            assert_eq!(state.print_status.progress, 50);
+        }
+    }
+
+    mod ams_parsing_tests {
+        use super::*;
+
+        #[test]
+        fn parses_active_tray_correctly() {
+            let mut state = PrinterState::default();
+
+            // tray_now "5" means unit 1 (5/4=1), tray 1 (5%4=1)
+            let report = AmsReport {
+                tray_now: Some("5".to_string()),
+                ams: Some(vec![]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert_eq!(ams.current_unit, Some(1));
+            assert_eq!(ams.current_tray, Some(1));
+        }
+
+        #[test]
+        fn parses_first_unit_first_tray() {
+            let mut state = PrinterState::default();
+
+            // tray_now "0" means unit 0, tray 0
+            let report = AmsReport {
+                tray_now: Some("0".to_string()),
+                ams: Some(vec![]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert_eq!(ams.current_unit, Some(0));
+            assert_eq!(ams.current_tray, Some(0));
+        }
+
+        #[test]
+        fn handles_external_spool() {
+            let mut state = PrinterState::default();
+
+            // tray_now "254" means external spool
+            let report = AmsReport {
+                tray_now: Some("254".to_string()),
+                ams: Some(vec![]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert_eq!(ams.current_unit, None);
+            assert_eq!(ams.current_tray, None);
+        }
+
+        #[test]
+        fn handles_no_tray_selected() {
+            let mut state = PrinterState::default();
+
+            // tray_now "255" means no selection
+            let report = AmsReport {
+                tray_now: Some("255".to_string()),
+                ams: Some(vec![]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert_eq!(ams.current_unit, None);
+            assert_eq!(ams.current_tray, None);
+        }
+
+        #[test]
+        fn parses_ams_units_and_trays() {
+            let mut state = PrinterState::default();
+
+            let report = AmsReport {
+                tray_now: Some("0".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "4".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            tray_type: Some("PLA".to_string()),
+                            tray_color: Some("FF0000".to_string()),
+                            remain: Some(85),
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            tray_type: Some("PETG".to_string()),
+                            tray_color: Some("#00FF00".to_string()),
+                            remain: Some(50),
+                        },
+                    ]),
+                }]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert_eq!(ams.units.len(), 1);
+
+            let unit = &ams.units[0];
+            assert_eq!(unit.id, 0);
+            assert_eq!(unit.humidity, 4);
+            assert_eq!(unit.trays.len(), 2);
+
+            assert_eq!(unit.trays[0].material, "PLA");
+            assert_eq!(unit.trays[0].remaining, 85);
+            assert_eq!(unit.trays[0].parsed_color, Some((255, 0, 0)));
+
+            assert_eq!(unit.trays[1].material, "PETG");
+            assert_eq!(unit.trays[1].remaining, 50);
+            assert_eq!(unit.trays[1].parsed_color, Some((0, 255, 0)));
+        }
+
+        #[test]
+        fn detects_ams_lite() {
+            let mut state = PrinterState::default();
+
+            // AMS Lite has only 2 trays
+            let report = AmsReport {
+                tray_now: Some("0".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "0".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            tray_type: Some("PLA".to_string()),
+                            tray_color: None,
+                            remain: Some(100),
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            tray_type: Some("PLA".to_string()),
+                            tray_color: None,
+                            remain: Some(100),
+                        },
+                    ]),
+                }]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert!(ams.units[0].is_lite);
+        }
+
+        #[test]
+        fn full_ams_is_not_lite() {
+            let mut state = PrinterState::default();
+
+            // Full AMS has 4 trays
+            let report = AmsReport {
+                tray_now: Some("0".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "4".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            tray_type: None,
+                            tray_color: None,
+                            remain: None,
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            tray_type: None,
+                            tray_color: None,
+                            remain: None,
+                        },
+                        AmsTrayReport {
+                            id: "2".to_string(),
+                            tray_type: None,
+                            tray_color: None,
+                            remain: None,
+                        },
+                        AmsTrayReport {
+                            id: "3".to_string(),
+                            tray_type: None,
+                            tray_color: None,
+                            remain: None,
+                        },
+                    ]),
+                }]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert!(!ams.units[0].is_lite);
+        }
+
+        #[test]
+        fn handles_negative_remaining() {
+            let mut state = PrinterState::default();
+
+            // Negative remain values should be clamped to 0
+            let report = AmsReport {
+                tray_now: None,
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "3".to_string(),
+                    tray: Some(vec![AmsTrayReport {
+                        id: "0".to_string(),
+                        tray_type: Some("PLA".to_string()),
+                        tray_color: None,
+                        remain: Some(-1),
+                    }]),
+                }]),
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            assert_eq!(ams.units[0].trays[0].remaining, 0);
+        }
     }
 }
