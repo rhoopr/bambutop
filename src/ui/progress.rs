@@ -153,3 +153,132 @@ fn speed_level_to_percent(level: u8) -> u32 {
         _ => SPEED_STANDARD,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod truncate_str_tests {
+        use super::*;
+
+        #[test]
+        fn returns_borrowed_when_no_truncation_needed() {
+            let result = truncate_str("short", 10);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "short");
+        }
+
+        #[test]
+        fn truncates_long_strings() {
+            let result = truncate_str("this is a very long string", 10);
+            assert!(matches!(result, Cow::Owned(_)));
+            assert_eq!(result, "this is...");
+        }
+
+        #[test]
+        fn handles_exact_length() {
+            let result = truncate_str("exactly10!", 10);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "exactly10!");
+        }
+
+        #[test]
+        fn handles_utf8_boundaries() {
+            // "héllo world" - 'é' is 2 bytes
+            // Bytes: h(1) + é(2) + l(1) + l(1) + o(1) + space(1) + world(5) = 12 bytes
+            // With max_len=8 and "..." taking 3, we have 5 bytes for content
+            // "héll" is 5 bytes: h(1) + é(2) + l(1) + l(1)
+            let result = truncate_str("héllo world", 8);
+            assert_eq!(result, "héll...");
+        }
+
+        #[test]
+        fn handles_emoji() {
+            // "Hello 🎉 World!" - 🎉 is 4 bytes at position 6-9
+            // With max_len=10, target_len=7 lands inside emoji
+            // Should walk back to byte 6 (start of emoji) then to byte 5 (space before)
+            // Actually byte 6 IS a char boundary (start of emoji), so we get "Hello "
+            let result = truncate_str("Hello 🎉 World!", 10);
+            assert_eq!(result, "Hello ...");
+        }
+
+        #[test]
+        fn handles_max_len_zero() {
+            let result = truncate_str("hello", 0);
+            assert_eq!(result, "...");
+        }
+
+        #[test]
+        fn handles_max_len_less_than_ellipsis() {
+            // max_len=2, target_len would be negative (saturates to 0)
+            let result = truncate_str("hello", 2);
+            assert_eq!(result, "...");
+        }
+
+        #[test]
+        fn handles_empty_string() {
+            let result = truncate_str("", 10);
+            assert_eq!(result, "");
+        }
+
+        #[test]
+        fn handles_very_short_max_len() {
+            let result = truncate_str("hello", 3);
+            assert_eq!(result, "...");
+        }
+    }
+
+    mod format_time_tests {
+        use super::*;
+
+        #[test]
+        fn returns_borrowed_for_zero() {
+            let result = format_time(0);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "--:--");
+        }
+
+        #[test]
+        fn formats_minutes_only() {
+            let result = format_time(45);
+            assert_eq!(result, "45m");
+        }
+
+        #[test]
+        fn formats_hours_and_minutes() {
+            let result = format_time(90);
+            assert_eq!(result, "1h 30m");
+        }
+
+        #[test]
+        fn formats_exact_hours() {
+            let result = format_time(120);
+            assert_eq!(result, "2h 0m");
+        }
+
+        #[test]
+        fn formats_large_values() {
+            let result = format_time(1500); // 25 hours
+            assert_eq!(result, "25h 0m");
+        }
+    }
+
+    mod speed_level_to_percent_tests {
+        use super::*;
+
+        #[test]
+        fn converts_known_levels() {
+            assert_eq!(speed_level_to_percent(1), 50); // Silent
+            assert_eq!(speed_level_to_percent(2), 100); // Standard
+            assert_eq!(speed_level_to_percent(3), 124); // Sport
+            assert_eq!(speed_level_to_percent(4), 166); // Ludicrous
+        }
+
+        #[test]
+        fn defaults_to_standard_for_invalid() {
+            assert_eq!(speed_level_to_percent(0), 100);
+            assert_eq!(speed_level_to_percent(5), 100);
+            assert_eq!(speed_level_to_percent(255), 100);
+        }
+    }
+}

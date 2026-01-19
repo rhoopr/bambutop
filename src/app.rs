@@ -67,7 +67,9 @@ impl App {
     /// Returns a human-readable status text based on connection and print state.
     ///
     /// Maps the printer's gcode_state to user-friendly labels.
-    pub fn status_text(&self) -> &str {
+    /// All return values are static strings, so the mutex lock is safely released
+    /// before the return value is used.
+    pub fn status_text(&self) -> &'static str {
         if !self.connected {
             return "Disconnected";
         }

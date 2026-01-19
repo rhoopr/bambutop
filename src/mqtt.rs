@@ -171,7 +171,11 @@ impl MqttClient {
                         }
                         let _ = tx_clone.send(MqttEvent::Disconnected).await;
                         let _ = tx_clone
-                            .send(MqttEvent::Error(format!("MQTT error: {}", e)))
+                            .send(MqttEvent::Error(format!(
+                                "MQTT error: {} (reconnecting in {}s)",
+                                e,
+                                RECONNECT_DELAY.as_secs()
+                            )))
                             .await;
                         // Wait before reconnecting
                         tokio::time::sleep(RECONNECT_DELAY).await;

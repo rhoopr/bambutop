@@ -1,35 +1,31 @@
 # BambuTop
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest)
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest)   [![Homebrew](https://img.shields.io/badge/homebrew-todo-orange?logo=homebrew)](#) 
+A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for your 3D printer.
 
- [![Vibe Coded](https://img.shields.io/badge/vibe-coded%20%E2%9C%A8-ff69b4)](#) [![Claude Code](https://img.shields.io/badge/Claude%20Code-D97757?logo=claude&logoColor=fff)](https://claude.com/product/claude-code) [![Bambu Lab](https://img.shields.io/badge/Bambu%20Lab-00AE42?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyTDIgN3Y2YzAgNS41NSAzLjg0IDEwLjc0IDEwIDEyIDYuMTYtMS4yNiAxMC02LjQ1IDEwLTEyVjdsLTEwLTV6Ii8+PC9zdmc+)](https://bambulab.com/) [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/) [![TUI](https://img.shields.io/badge/TUI-Terminal%20App-orange)](#)
+![BambuTop Screenshot](screenshot.png)
 
-A terminal-based status monitor for Bambu Lab printers. top/htop/btop/*top, but for your 3D printer. 
+## What You Can Monitor
 
-![BambuTop Screenshot](screenshot.png)<p align=center>Screenshot in [![Ghostty](https://custom-icon-badges.demolab.com/badge/Ghostty-0000ff?logo=ghostty_term)](https://github.com/ghostty-org/ghostty)</p>
-
-## Features
-
-- Real-time printer status monitoring
-- Print progress with job name, speed, layer count, and time remaining
-- Temperature monitoring (chamber, nozzle, bed) with visual gauges
-- Fan speeds (part cooling, auxiliary, chamber)
-- AMS status with humidity levels and filament info
-- HMS error notifications
+- **Print Progress** — Job name, speed, layer count, and time remaining
+- **Temperatures** — Nozzle, bed, and chamber with visual gauges
+- **Fan Speeds** — Part cooling, auxiliary, and chamber fans
+- **AMS Status** — Humidity levels and filament info for each slot
+- **HMS Errors** — Health Management System notifications
 
 ## Supported Printers
 
-- **P Series:** P1P, P1S, P2S
-- **X Series:** X1C, X1E
-- **A Series:** A1, A1 Mini
-- **H Series:** H2C, H2S, H2D, H2D Pro
+| Series | Models |
+|--------|--------|
+| P Series | P1P, P1S, P2S |
+| X Series | X1C, X1E |
+| A Series | A1, A1 Mini |
+| H Series | H2C, H2S, H2D, H2D Pro |
 
-## Installation
+## Quick Start
 
-### Download Prebuilt Binary (Recommended)
-
-Download the latest release for your platform:
+### 1. Download
 
 **macOS (Apple Silicon):**
 ```bash
@@ -52,75 +48,64 @@ tar xzf bambutop-linux-x86_64.tar.gz
 sudo mv bambutop /usr/local/bin/
 ```
 
-### Build from Source
-
-Requires [Rust](https://rustup.rs/):
-
-```bash
-cargo install --git https://github.com/rhoopr/bambutop.git
-```
-
-## Configuration
-
-On first run, BambuTop will launch a setup wizard to configure your printer connection. The config is saved to `~/.config/bambutop/config.toml`.
-
-You can also run with command-line flags to skip the config file entirely:
-
-```bash
-bambutop --ip 192.168.1.100 --serial YOUR_SERIAL --access-code YOUR_CODE
-```
-
-Or create the config file manually:
-
-```toml
-[printer]
-ip = "192.168.1.100"
-serial = "YOUR_PRINTER_SERIAL"
-access_code = "YOUR_ACCESS_CODE"
-```
-
-### Finding Your Printer Details
-
-1. **IP Address:** Check your router's connected devices, or find it in Bambu Studio under Device > Network
-2. **Serial Number:** Found on the printer's label or in Bambu Studio under Device info
-3. **Access Code:** Found on the printer's screen under Settings > Network > Access Code
-
-## Usage
+### 2. Run
 
 ```bash
 bambutop
 ```
 
-### Command-Line Options
+On first run, you'll be guided through a setup wizard to connect to your printer.
 
-| Flag | Description |
-|------|-------------|
-| `--ip <IP>` | Printer IP address |
-| `--serial <SERIAL>` | Printer serial number |
-| `--access-code <CODE>` | Printer access code |
-| `--reset` | Delete config and re-run setup wizard |
+## Finding Your Printer Details
 
-### Keyboard Shortcuts
+You'll need three pieces of information from your printer:
+
+| Setting | Where to Find It |
+|---------|------------------|
+| **IP Address** | Router's connected devices list, or Bambu Studio → Device → Network |
+| **Serial Number** | Printer label, or Bambu Studio → Device info |
+| **Access Code** | Printer screen → Settings → Network → Access Code |
+
+## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
-| `r` | Toggle auto-refresh |
+| `q` or `Esc` | Quit |
+| `r` | Toggle auto-refresh on/off |
 
-## Requirements
+## Command-Line Options
 
-- Your printer must be on the same network as your computer
+```bash
+# Run with specific printer (skips config file)
+bambutop --ip 192.168.1.100 --serial YOUR_SERIAL --access-code YOUR_CODE
+
+# Reset config and re-run setup wizard
+bambutop --reset
+```
 
 ## Troubleshooting
 
 **"MQTT error: connection refused"**
 - Verify your printer's IP address is correct
-- Check that your computer can reach the printer (`ping 192.168.1.100`)
+- Make sure your computer is on the same network as the printer
+- Try pinging the printer: `ping 192.168.1.100`
 
 **"MQTT error: authentication failed"**
-- Double-check your access code
-- The access code may have changed - check the printer's screen for the current code
+- Double-check your access code on the printer's screen
+- The access code may have changed — regenerate it if needed
+
+**Display looks garbled**
+- Make sure your terminal supports Unicode
+- Try a different terminal emulator (iTerm2, Ghostty, Alacritty, etc.)
+
+## Building from Source
+
+If you prefer to build from source, you'll need [Rust](https://rustup.rs/):
+
+```bash
+cargo install --git https://github.com/rhoopr/bambutop.git
+```
 
 ## License
 
-GPLv3 - See [LICENSE](LICENSE) for details.
+GPLv3 — See [LICENSE](LICENSE) for details.
