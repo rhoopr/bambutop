@@ -14,6 +14,9 @@ const MAX_CONTENT_WIDTH: u16 = 100;
 
 /// Renders the main application UI with header, progress, temps, AMS, and help bar.
 pub fn render(frame: &mut Frame, app: &App) {
+    // Take a snapshot of printer state once to avoid holding the lock during rendering
+    let printer_state = app.printer_state_snapshot();
+
     // Limit width and center horizontally
     let area = frame.area();
     let content_area = if area.width > MAX_CONTENT_WIDTH {
@@ -34,8 +37,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(content_area);
 
-    header::render(frame, app, chunks[0]);
-    progress::render(frame, app, chunks[1]);
+    header::render(frame, app, &printer_state, chunks[0]);
+    progress::render(frame, &printer_state, chunks[1]);
 
     // Middle row: temps on left, AMS on right
     let middle_row = Layout::default()
@@ -43,8 +46,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[2]);
 
-    temps::render(frame, app, middle_row[0]);
-    status::render_ams(frame, app, middle_row[1]);
+    temps::render(frame, &printer_state, middle_row[0]);
+    status::render_ams(frame, &printer_state, middle_row[1]);
 
     render_help_bar(frame, app, chunks[4]);
 }
@@ -81,7 +84,7 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" Auto-Refresh "),
         refresh_status,
         Span::styled(
-            last_update.into_owned(),
+            last_update,
             Style::new()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),

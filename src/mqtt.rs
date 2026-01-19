@@ -5,9 +5,10 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Tr
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// MQTT keepalive interval in seconds
 const KEEPALIVE_SECS: u64 = 30;
@@ -68,21 +69,50 @@ impl ServerCertVerifier for NoVerifier {
     }
 }
 
+/// Events sent from the MQTT background task to the main application.
+///
+/// Note: Adding new variants is a breaking change for exhaustive matches.
+#[non_exhaustive]
 pub enum MqttEvent {
+    /// Successfully connected to the MQTT broker
     Connected,
+    /// Disconnected from the MQTT broker
     Disconnected,
-    StateUpdate(Box<PrinterState>),
+    /// Printer state has been updated (read from shared state)
+    StateUpdated,
+    /// An error occurred
     Error(String),
 }
+
+/// Shared printer state that can be accessed by both the MQTT task and the UI.
+pub type SharedPrinterState = Arc<Mutex<PrinterState>>;
 
 pub struct MqttClient {
     client: AsyncClient,
     config: PrinterConfig,
+    /// Handle to the background event loop task for graceful shutdown
+    _event_loop_handle: JoinHandle<()>,
 }
 
 impl MqttClient {
-    pub async fn connect(config: PrinterConfig) -> Result<(Self, mpsc::Receiver<MqttEvent>)> {
+    /// Connects to the printer's MQTT broker and starts the event loop.
+    ///
+    /// Returns the client, a shared printer state, and a receiver for MQTT events.
+    /// The shared state is updated directly by the MQTT task, eliminating the need
+    /// to clone the entire state on every message.
+    pub async fn connect(
+        config: PrinterConfig,
+    ) -> Result<(Self, SharedPrinterState, mpsc::Receiver<MqttEvent>)> {
         let (tx, rx) = mpsc::channel(100);
+
+        // Create shared state
+        let state = Arc::new(Mutex::new(PrinterState::default()));
+
+        // Initialize model from serial
+        {
+            let mut state_guard = state.lock().expect("state lock poisoned");
+            state_guard.set_model_from_serial(&config.serial);
+        }
 
         let client_id = format!("bambutop_{}", std::process::id());
         let mut mqtt_opts = MqttOptions::new(&client_id, &config.ip, config.port);
@@ -102,33 +132,32 @@ impl MqttClient {
 
         let (client, mut eventloop) = AsyncClient::new(mqtt_opts, 10);
 
+        // Clone for the spawned task
+        let state_clone = Arc::clone(&state);
         let tx_clone = tx.clone();
 
         // Spawn event loop handler
-        let serial_for_model = config.serial.clone();
-        tokio::spawn(async move {
-            let mut state = PrinterState::default();
-            state.set_model_from_serial(&serial_for_model);
-
+        let event_loop_handle = tokio::spawn(async move {
             loop {
                 match eventloop.poll().await {
                     Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                        state.connected = true;
+                        {
+                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            state_guard.connected = true;
+                        }
                         let _ = tx_clone.send(MqttEvent::Connected).await;
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
                         if let Ok(payload) = std::str::from_utf8(&publish.payload) {
-                            match serde_json::from_str::<MqttMessage>(payload) {
-                                Ok(msg) => {
-                                    state.update_from_message(&msg);
-                                    let _ = tx_clone
-                                        .send(MqttEvent::StateUpdate(Box::new(state.clone())))
-                                        .await;
+                            if let Ok(msg) = serde_json::from_str::<MqttMessage>(payload) {
+                                {
+                                    let mut state_guard =
+                                        state_clone.lock().expect("state lock poisoned");
+                                    state_guard.update_from_message(&msg);
                                 }
-                                Err(_) => {
-                                    // Many messages may not match our structure - that's ok
-                                }
+                                let _ = tx_clone.send(MqttEvent::StateUpdated).await;
                             }
+                            // Many messages may not match our structure - that's ok
                         }
                     }
                     Ok(Event::Incoming(Packet::SubAck(_))) => {
@@ -136,7 +165,10 @@ impl MqttClient {
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        state.connected = false;
+                        {
+                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            state_guard.connected = false;
+                        }
                         let _ = tx_clone.send(MqttEvent::Disconnected).await;
                         let _ = tx_clone
                             .send(MqttEvent::Error(format!("MQTT error: {}", e)))
@@ -155,7 +187,15 @@ impl MqttClient {
             .context("Subscribe operation timed out")?
             .context("Failed to subscribe to printer topic")?;
 
-        Ok((Self { client, config }, rx))
+        Ok((
+            Self {
+                client,
+                config,
+                _event_loop_handle: event_loop_handle,
+            },
+            state,
+            rx,
+        ))
     }
 
     pub async fn request_full_status(&self) -> Result<()> {
@@ -177,5 +217,12 @@ impl MqttClient {
         .context("Failed to request full status")?;
 
         Ok(())
+    }
+}
+
+impl Drop for MqttClient {
+    fn drop(&mut self) {
+        // Abort the event loop task on drop for clean shutdown
+        self._event_loop_handle.abort();
     }
 }

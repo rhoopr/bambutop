@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::printer::PrinterState;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -20,7 +20,7 @@ const ACTIVE_TEMP_THRESHOLD: f32 = 50.0;
 const AT_TARGET_THRESHOLD: f32 = 5.0;
 
 /// Renders the temperatures panel with nozzle, bed, chamber temps and fan speeds.
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -44,11 +44,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(inner);
 
-    let temps = &app.printer_state.temperatures;
-    let speeds = &app.printer_state.speeds;
+    let temps = &printer_state.temperatures;
+    let speeds = &printer_state.speeds;
 
     // Chamber temperature (at top) - only show if printer has a sensor
-    if app.printer_state.has_chamber_temp_sensor() {
+    if printer_state.has_chamber_temp_sensor() {
         let chamber_line = Line::from(vec![
             Span::raw(" "),
             Span::styled("Chamber: ", Style::new().fg(Color::DarkGray)),

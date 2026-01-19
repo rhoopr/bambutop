@@ -338,13 +338,19 @@ impl PrinterState {
             self.speeds.speed_level = v;
         }
         if let Some(v) = &report.cooling_fan_speed {
-            self.speeds.fan_speed = parse_fan_speed(v);
+            if let Some(speed) = parse_fan_speed(v) {
+                self.speeds.fan_speed = speed;
+            }
         }
         if let Some(v) = &report.big_fan1_speed {
-            self.speeds.aux_fan_speed = parse_fan_speed(v);
+            if let Some(speed) = parse_fan_speed(v) {
+                self.speeds.aux_fan_speed = speed;
+            }
         }
         if let Some(v) = &report.big_fan2_speed {
-            self.speeds.chamber_fan_speed = parse_fan_speed(v);
+            if let Some(speed) = parse_fan_speed(v) {
+                self.speeds.chamber_fan_speed = speed;
+            }
         }
 
         // Lights
@@ -467,11 +473,16 @@ impl PrinterState {
     }
 }
 
-fn parse_fan_speed(s: &str) -> u8 {
-    // Fan speed comes as a string like "15" representing 0-15 scale
-    // Convert to percentage
-    let val: u8 = s.parse().unwrap_or(0);
-    ((val as f32 / 15.0) * 100.0) as u8
+/// Parses fan speed from Bambu's 0-15 scale string to percentage (0-100).
+///
+/// Returns `None` if the string cannot be parsed as a valid number.
+/// Valid input: "0" to "15" representing the Bambu fan speed scale.
+fn parse_fan_speed(s: &str) -> Option<u8> {
+    let val: u8 = s.parse().ok()?;
+    // Bambu uses 0-15 scale, convert to percentage
+    // Cap at 15 to prevent overflow in edge cases
+    let capped = val.min(15);
+    Some(((capped as f32 / 15.0) * 100.0) as u8)
 }
 
 fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {

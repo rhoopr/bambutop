@@ -1,6 +1,13 @@
 use crate::config::{Config, PrinterConfig};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::io::{self, Write};
+use std::net::IpAddr;
+
+/// Minimum length for Bambu access codes
+const MIN_ACCESS_CODE_LENGTH: usize = 4;
+
+/// Expected length for Bambu serial numbers
+const EXPECTED_SERIAL_LENGTH: usize = 15;
 
 pub fn run_setup_wizard() -> Result<Config> {
     println!();
@@ -15,9 +22,9 @@ pub fn run_setup_wizard() -> Result<Config> {
     println!("  - Access code (found in printer settings under LAN mode)");
     println!();
 
-    let ip = prompt("Printer IP address")?;
-    let serial = prompt("Printer serial number")?;
-    let access_code = prompt("Access code")?;
+    let ip = prompt_ip("Printer IP address")?;
+    let serial = prompt_serial("Printer serial number")?;
+    let access_code = prompt_access_code("Access code")?;
 
     let config = Config {
         printer: PrinterConfig {
@@ -38,13 +45,91 @@ pub fn run_setup_wizard() -> Result<Config> {
     Ok(config)
 }
 
+/// Prompts for and validates an IP address.
+fn prompt_ip(label: &str) -> Result<String> {
+    loop {
+        let input = prompt(label)?;
+
+        // Try to parse as IP address
+        match input.parse::<IpAddr>() {
+            Ok(_) => return Ok(input),
+            Err(_) => {
+                println!("  Invalid IP address format. Please enter a valid IPv4 or IPv6 address.");
+                println!("  Example: 192.168.1.100");
+                continue;
+            }
+        }
+    }
+}
+
+/// Prompts for and validates a serial number.
+fn prompt_serial(label: &str) -> Result<String> {
+    loop {
+        let input = prompt(label)?;
+
+        // Bambu serial numbers are typically 15 alphanumeric characters
+        if input.len() < 3 {
+            println!("  Serial number seems too short. Bambu serial numbers are typically {} characters.", EXPECTED_SERIAL_LENGTH);
+            println!("  Example: 01P00A000000000");
+            continue;
+        }
+
+        // Check for valid characters (alphanumeric only)
+        if !input.chars().all(|c| c.is_ascii_alphanumeric()) {
+            println!("  Serial number should only contain letters and numbers.");
+            continue;
+        }
+
+        // Warn but allow if length doesn't match expected
+        if input.len() != EXPECTED_SERIAL_LENGTH {
+            println!(
+                "  Note: Serial number is {} characters (expected {}). Continuing anyway.",
+                input.len(),
+                EXPECTED_SERIAL_LENGTH
+            );
+        }
+
+        return Ok(input);
+    }
+}
+
+/// Prompts for and validates an access code.
+fn prompt_access_code(label: &str) -> Result<String> {
+    loop {
+        let input = prompt(label)?;
+
+        // Bambu access codes are typically 8 alphanumeric characters
+        if input.len() < MIN_ACCESS_CODE_LENGTH {
+            println!(
+                "  Access code seems too short (minimum {} characters).",
+                MIN_ACCESS_CODE_LENGTH
+            );
+            println!("  Access codes are found in printer settings under LAN mode.");
+            continue;
+        }
+
+        // Check for valid characters
+        if !input.chars().all(|c| c.is_ascii_alphanumeric()) {
+            println!("  Access code should only contain letters and numbers.");
+            continue;
+        }
+
+        return Ok(input);
+    }
+}
+
+/// Prompts for user input with the given label.
 fn prompt(label: &str) -> Result<String> {
     loop {
         print!("{}: ", label);
-        io::stdout().flush()?;
+        io::stdout()
+            .flush()
+            .context("Failed to flush stdout during prompt")?;
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
+        io::stdin()
+            .read_line(&mut input)
+            .context("Failed to read user input")?;
         let input = input.trim().to_string();
 
         if input.is_empty() {

@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::printer::PrinterState;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -11,8 +11,11 @@ use smallvec::SmallVec;
 /// Estimated line count for AMS display pre-allocation
 const AMS_LINES_ESTIMATE: usize = 20;
 
+/// Orange color for humidity grade D
+const COLOR_ORANGE: Color = Color::Rgb(255, 165, 0);
+
 /// Renders the AMS (Automatic Material System) status panel.
-pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -23,7 +26,7 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: SmallVec<[Line; AMS_LINES_ESTIMATE]> = SmallVec::new();
 
-    if let Some(ams) = &app.printer_state.ams {
+    if let Some(ams) = &printer_state.ams {
         let num_units = ams.units.len();
 
         for unit in &ams.units {
@@ -88,7 +91,7 @@ pub fn render_ams(frame: &mut Frame, app: &App, area: Rect) {
                     let grade_color = match grade {
                         'A' | 'B' => Color::Green,
                         'C' => Color::Yellow,
-                        'D' => Color::Rgb(255, 165, 0), // Orange
+                        'D' => COLOR_ORANGE,
                         'E' => Color::Red,
                         _ => Color::DarkGray,
                     };
