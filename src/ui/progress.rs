@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::printer::PrinterState;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -16,7 +16,7 @@ const SPEED_SPORT: u32 = 124;
 const SPEED_LUDICROUS: u32 = 166;
 
 /// Renders the print progress panel showing job name, speed, layer, time remaining, and progress bar.
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(inner);
 
-    let print_status = &app.printer_state.print_status;
+    let print_status = &printer_state.print_status;
 
     // Print job name - use smart display_name() that prefers actual project names
     let job_name = print_status.display_name();
@@ -60,7 +60,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(file_line), chunks[0]);
 
     // Speed, Layer and time remaining
-    let speed_percent = speed_level_to_percent(app.printer_state.speeds.speed_level);
+    let speed_percent = speed_level_to_percent(printer_state.speeds.speed_level);
     let time_remaining = format_time(print_status.remaining_time_mins);
 
     let layer_value = if print_status.total_layers > 0 {
@@ -104,11 +104,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Truncates a string to a maximum length, adding "..." if truncated.
 /// Returns `Cow::Borrowed` when no truncation is needed to avoid allocation.
+/// Handles UTF-8 safely by finding valid character boundaries.
 fn truncate_str(s: &str, max_len: usize) -> Cow<'_, str> {
     if s.len() <= max_len {
-        Cow::Borrowed(s)
+        return Cow::Borrowed(s);
+    }
+
+    // Find a safe truncation point that doesn't split a UTF-8 character
+    let target_len = max_len.saturating_sub(3);
+    let mut end = target_len.min(s.len());
+
+    // Walk backwards to find a valid UTF-8 character boundary
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    if end == 0 {
+        // Edge case: couldn't find a valid boundary, just return ellipsis
+        Cow::Borrowed("...")
     } else {
-        Cow::Owned(format!("{}...", &s[..max_len - 3]))
+        Cow::Owned(format!("{}...", &s[..end]))
     }
 }
 

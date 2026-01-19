@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::printer::PrinterState;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -18,18 +19,18 @@ const WIFI_MEDIUM_THRESHOLD: i32 = -70;
 const WIFI_DEFAULT_DBM: i32 = -100;
 
 /// Renders the header panel with printer status and system info boxes.
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     // Split into two boxes side by side
     let boxes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(20), Constraint::Min(1)])
         .split(area);
 
-    render_status_box(frame, app, boxes[0]);
-    render_system_box(frame, app, boxes[1]);
+    render_status_box(frame, app, printer_state, boxes[0]);
+    render_system_box(frame, app, printer_state, boxes[1]);
 }
 
-fn render_status_box(frame: &mut Frame, app: &App, area: Rect) {
+fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     let status = app.status_text();
     let status_color = match status {
         "Printing" => Color::Green,
@@ -39,10 +40,10 @@ fn render_status_box(frame: &mut Frame, app: &App, area: Rect) {
         _ => Color::White,
     };
 
-    let model = if app.printer_state.printer_model.is_empty() {
+    let model = if printer_state.printer_model.is_empty() {
         "Bambu Printer"
     } else {
-        &app.printer_state.printer_model
+        &printer_state.printer_model
     };
     let title = format!(" {} ", model);
     let block = Block::default()
@@ -67,8 +68,8 @@ fn render_status_box(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status_line), inner);
 }
 
-fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
-    let has_errors = !app.printer_state.hms_errors.is_empty() || app.error_message.is_some();
+fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
+    let has_errors = !printer_state.hms_errors.is_empty() || app.error_message.is_some();
 
     let border_color = if has_errors { Color::Red } else { Color::Green };
     let title = if has_errors {
@@ -99,8 +100,8 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" "),
             Span::styled(err.as_str(), Style::new().fg(Color::Red)),
         ]));
-    } else if !app.printer_state.hms_errors.is_empty() {
-        for error in &app.printer_state.hms_errors {
+    } else if !printer_state.hms_errors.is_empty() {
+        for error in &printer_state.hms_errors {
             let severity_color = match error.severity {
                 0..=1 => Color::Yellow,
                 2 => Color::LightRed,
@@ -121,7 +122,7 @@ fn render_system_box(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines.into_vec()), cols[0]);
 
     // Right side: WiFi indicator
-    let wifi_spans = render_wifi_signal(&app.printer_state.wifi_signal);
+    let wifi_spans = render_wifi_signal(&printer_state.wifi_signal);
     let wifi_line = Line::from(wifi_spans);
     frame.render_widget(
         Paragraph::new(wifi_line).alignment(Alignment::Right),
@@ -150,13 +151,8 @@ fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
         ];
     }
 
-    // Parse dBm value from string (e.g., "-45dBm" or "-45")
-    let dbm: i32 = wifi_signal
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '-')
-        .collect::<String>()
-        .parse()
-        .unwrap_or(WIFI_DEFAULT_DBM);
+    // Parse dBm value from string without allocation
+    let dbm = parse_dbm(wifi_signal).unwrap_or(WIFI_DEFAULT_DBM);
 
     // Determine signal strength and color
     let (color, bars) = if dbm > WIFI_STRONG_THRESHOLD {
@@ -173,4 +169,28 @@ fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
         Span::raw(" "),
         Span::styled(wifi_signal.to_string(), Style::new().fg(color)),
     ]
+}
+
+/// Parses dBm value from a string like "-45dBm" or "-45" without allocation.
+fn parse_dbm(s: &str) -> Option<i32> {
+    let mut result: i32 = 0;
+    let mut negative = false;
+    let mut found_digit = false;
+
+    for c in s.chars() {
+        if c == '-' && !found_digit {
+            negative = true;
+        } else if c.is_ascii_digit() {
+            found_digit = true;
+            result = result
+                .saturating_mul(10)
+                .saturating_add((c as i32) - ('0' as i32));
+        }
+    }
+
+    if found_digit {
+        Some(if negative { -result } else { result })
+    } else {
+        None
+    }
 }

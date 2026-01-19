@@ -15,8 +15,12 @@ use crossterm::{
 };
 use mqtt::MqttClient;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io;
+use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+/// Flag to track whether terminal is in raw mode (for panic hook)
+static TERMINAL_IN_RAW_MODE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser, Debug)]
 #[command(name = "bambutop")]
@@ -90,18 +94,32 @@ async fn main() -> Result<()> {
         config
     };
 
+    // Install panic hook to restore terminal state on panic
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        if TERMINAL_IN_RAW_MODE.load(Ordering::SeqCst) {
+            let _ = disable_raw_mode();
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+            let _ = stdout.flush();
+        }
+        original_hook(panic_info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
+    TERMINAL_IN_RAW_MODE.store(true, Ordering::SeqCst);
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app
-    let mut app = App::new();
+    // Connect to printer (returns shared state for zero-copy updates)
+    let (mqtt_client, printer_state, mut mqtt_rx) =
+        MqttClient::connect(config.printer.clone()).await?;
 
-    // Connect to printer
-    let (mqtt_client, mut mqtt_rx) = MqttClient::connect(config.printer.clone()).await?;
+    // Create app with shared printer state
+    let mut app = App::new(printer_state);
 
     // Request initial state
     mqtt_client.request_full_status().await?;
@@ -118,6 +136,7 @@ async fn main() -> Result<()> {
     .await;
 
     // Restore terminal
+    TERMINAL_IN_RAW_MODE.store(false, Ordering::SeqCst);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -138,8 +157,11 @@ async fn run_app(
     app: &mut App,
     mqtt_rx: &mut tokio::sync::mpsc::Receiver<mqtt::MqttEvent>,
     tick_rate: Duration,
-    _mqtt_client: &MqttClient, // Kept alive to maintain MQTT connection
+    mqtt_client: &MqttClient,
 ) -> Result<()> {
+    // mqtt_client is held here to keep the MQTT connection alive;
+    // dropping it triggers graceful shutdown of the event loop task
+    let _ = mqtt_client;
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 

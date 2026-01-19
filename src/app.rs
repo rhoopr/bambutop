@@ -1,4 +1,4 @@
-use crate::mqtt::MqttEvent;
+use crate::mqtt::{MqttEvent, SharedPrinterState};
 use crate::printer::PrinterState;
 use std::time::{Duration, Instant};
 
@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 ///
 /// Manages the connection state, printer data, and UI preferences.
 pub struct App {
-    /// Current state of the connected printer
-    pub printer_state: PrinterState,
+    /// Shared printer state (updated by MQTT task)
+    pub printer_state: SharedPrinterState,
     /// Whether the MQTT connection is active
     pub connected: bool,
     /// Timestamp of the last state update from the printer
@@ -21,10 +21,10 @@ pub struct App {
 }
 
 impl App {
-    /// Creates a new App instance with default state.
-    pub fn new() -> Self {
+    /// Creates a new App instance with the given shared printer state.
+    pub fn new(printer_state: SharedPrinterState) -> Self {
         Self {
-            printer_state: PrinterState::default(),
+            printer_state,
             connected: false,
             last_update: None,
             error_message: None,
@@ -37,7 +37,7 @@ impl App {
     ///
     /// - `Connected`: Marks the connection as active and clears errors
     /// - `Disconnected`: Marks the connection as inactive
-    /// - `StateUpdate`: Updates printer state and records the update time
+    /// - `StateUpdated`: Records the update time (state is already updated via shared reference)
     /// - `Error`: Stores the error message for display
     pub fn handle_mqtt_event(&mut self, event: MqttEvent) {
         match event {
@@ -48,9 +48,9 @@ impl App {
             MqttEvent::Disconnected => {
                 self.connected = false;
             }
-            MqttEvent::StateUpdate(state) => {
-                self.printer_state = *state;
-                self.printer_state.connected = true;
+            MqttEvent::StateUpdated => {
+                // State is updated via shared reference, just record the time
+                self.connected = true;
                 self.last_update = Some(Instant::now());
             }
             MqttEvent::Error(msg) => {
@@ -69,18 +69,29 @@ impl App {
     /// Maps the printer's gcode_state to user-friendly labels.
     pub fn status_text(&self) -> &str {
         if !self.connected {
-            "Disconnected"
-        } else {
-            match self.printer_state.print_status.gcode_state.as_str() {
-                "IDLE" => "Idle",
-                "PREPARE" => "Preparing",
-                "RUNNING" => "Printing",
-                "PAUSE" => "Paused",
-                "FINISH" => "Finished",
-                "FAILED" => "Failed",
-                "" => "Connecting...",
-                other => other,
-            }
+            return "Disconnected";
         }
+
+        let state = self.printer_state.lock().expect("state lock poisoned");
+        match state.print_status.gcode_state.as_str() {
+            "IDLE" => "Idle",
+            "PREPARE" => "Preparing",
+            "RUNNING" => "Printing",
+            "PAUSE" => "Paused",
+            "FINISH" => "Finished",
+            "FAILED" => "Failed",
+            "" => "Connecting...",
+            _ => "Unknown",
+        }
+    }
+
+    /// Returns a snapshot of the printer state for rendering.
+    ///
+    /// This clones the state to avoid holding the lock during rendering.
+    pub fn printer_state_snapshot(&self) -> PrinterState {
+        self.printer_state
+            .lock()
+            .expect("state lock poisoned")
+            .clone()
     }
 }
