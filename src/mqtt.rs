@@ -9,6 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// MQTT keepalive interval in seconds
+const KEEPALIVE_SECS: u64 = 30;
+
+/// Delay before attempting to reconnect after a connection error
+const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// Timeout for MQTT operations (subscribe, publish)
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Certificate verifier that accepts any certificate (for self-signed Bambu certs)
 #[derive(Debug)]
 struct NoVerifier;
@@ -79,7 +88,7 @@ impl MqttClient {
         let mut mqtt_opts = MqttOptions::new(&client_id, &config.ip, config.port);
 
         mqtt_opts.set_credentials("bblp", &config.access_code);
-        mqtt_opts.set_keep_alive(Duration::from_secs(30));
+        mqtt_opts.set_keep_alive(Duration::from_secs(KEEPALIVE_SECS));
 
         // Configure TLS - Bambu printers use self-signed certs, so we skip verification
         let tls_config = ClientConfig::builder()
@@ -87,9 +96,9 @@ impl MqttClient {
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();
 
-        mqtt_opts.set_transport(Transport::tls_with_config(
-            TlsConfiguration::Rustls(Arc::new(tls_config)),
-        ));
+        mqtt_opts.set_transport(Transport::tls_with_config(TlsConfiguration::Rustls(
+            Arc::new(tls_config),
+        )));
 
         let (client, mut eventloop) = AsyncClient::new(mqtt_opts, 10);
 
@@ -133,7 +142,7 @@ impl MqttClient {
                             .send(MqttEvent::Error(format!("MQTT error: {}", e)))
                             .await;
                         // Wait before reconnecting
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        tokio::time::sleep(RECONNECT_DELAY).await;
                     }
                 }
             }
@@ -141,18 +150,12 @@ impl MqttClient {
 
         // Subscribe to printer reports
         let topic = format!("device/{}/report", config.serial);
-        client
-            .subscribe(&topic, QoS::AtMostOnce)
+        tokio::time::timeout(OPERATION_TIMEOUT, client.subscribe(&topic, QoS::AtMostOnce))
             .await
+            .context("Subscribe operation timed out")?
             .context("Failed to subscribe to printer topic")?;
 
-        Ok((
-            Self {
-                client,
-                config,
-            },
-            rx,
-        ))
+        Ok((Self { client, config }, rx))
     }
 
     pub async fn request_full_status(&self) -> Result<()> {
@@ -164,10 +167,14 @@ impl MqttClient {
             }
         });
 
-        self.client
-            .publish(&topic, QoS::AtMostOnce, false, payload.to_string())
-            .await
-            .context("Failed to request full status")?;
+        tokio::time::timeout(
+            OPERATION_TIMEOUT,
+            self.client
+                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+        )
+        .await
+        .context("Publish operation timed out")?
+        .context("Failed to request full status")?;
 
         Ok(())
     }
