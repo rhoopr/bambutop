@@ -6,14 +6,23 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
 };
+use std::borrow::Cow;
 
+/// Speed level percentages for Bambu printers.
+/// Levels: 1=silent, 2=standard, 3=sport, 4=ludicrous
+const SPEED_SILENT: u32 = 50;
+const SPEED_STANDARD: u32 = 100;
+const SPEED_SPORT: u32 = 124;
+const SPEED_LUDICROUS: u32 = 166;
+
+/// Renders the print progress panel showing job name, speed, layer, time remaining, and progress bar.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Blue))
+        .border_style(Style::new().fg(Color::Blue))
         .title(Span::styled(
             " Print Progress ",
-            Style::default().fg(Color::Blue),
+            Style::new().fg(Color::Blue),
         ));
 
     let inner = block.inner(area);
@@ -33,21 +42,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let print_status = &app.printer_state.print_status;
 
     // Print job name - use smart display_name() that prefers actual project names
-    let job_name = {
-        let name = print_status.display_name();
-        if name.is_empty() {
-            "No print job".to_string()
-        } else {
-            name
-        }
+    let job_name = print_status.display_name();
+    let job_display: Cow<'_, str> = if job_name.is_empty() {
+        Cow::Borrowed("No print job")
+    } else {
+        job_name
     };
 
     let file_line = Line::from(vec![
         Span::raw(" "),
-        Span::styled("Job: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Job: ", Style::new().fg(Color::DarkGray)),
         Span::styled(
-            truncate_str(&job_name, 70),
-            Style::default().fg(Color::White),
+            truncate_str(&job_display, 70).into_owned(),
+            Style::new().fg(Color::White),
         ),
     ]);
     frame.render_widget(Paragraph::new(file_line), chunks[0]);
@@ -64,14 +71,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let info_line = Line::from(vec![
         Span::raw(" "),
-        Span::styled("Speed: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}%", speed_percent), Style::default().fg(Color::Cyan)),
+        Span::styled("Speed: ", Style::new().fg(Color::DarkGray)),
+        Span::styled(format!("{}%", speed_percent), Style::new().fg(Color::Cyan)),
         Span::raw("   "),
-        Span::styled("Layer: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(layer_value, Style::default().fg(Color::Cyan)),
+        Span::styled("Layer: ", Style::new().fg(Color::DarkGray)),
+        Span::styled(layer_value, Style::new().fg(Color::Cyan)),
         Span::raw("   "),
-        Span::styled("Remaining: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(time_remaining, Style::default().fg(Color::Cyan)),
+        Span::styled("Remaining: ", Style::new().fg(Color::DarkGray)),
+        Span::styled(time_remaining.into_owned(), Style::new().fg(Color::Cyan)),
     ]);
     frame.render_widget(Paragraph::new(info_line), chunks[2]);
 
@@ -86,44 +93,48 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(progress_color).bg(Color::DarkGray))
+        .gauge_style(Style::new().fg(progress_color).bg(Color::DarkGray))
         .ratio(progress)
         .label(Span::styled(
             format!("{}%", print_status.progress),
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::new().add_modifier(Modifier::BOLD),
         ));
     frame.render_widget(gauge, chunks[3]);
 }
 
-fn truncate_str(s: &str, max_len: usize) -> String {
+/// Truncates a string to a maximum length, adding "..." if truncated.
+/// Returns `Cow::Borrowed` when no truncation is needed to avoid allocation.
+fn truncate_str(s: &str, max_len: usize) -> Cow<'_, str> {
     if s.len() <= max_len {
-        s.to_string()
+        Cow::Borrowed(s)
     } else {
-        format!("{}...", &s[..max_len - 3])
+        Cow::Owned(format!("{}...", &s[..max_len - 3]))
     }
 }
 
-fn format_time(mins: u32) -> String {
+/// Formats minutes into a human-readable time string.
+/// Returns `Cow::Borrowed` for the zero case to avoid allocation.
+fn format_time(mins: u32) -> Cow<'static, str> {
     if mins == 0 {
-        "--:--".to_string()
+        Cow::Borrowed("--:--")
     } else {
         let hours = mins / 60;
         let minutes = mins % 60;
-        if hours > 0 {
+        Cow::Owned(if hours > 0 {
             format!("{}h {}m", hours, minutes)
         } else {
             format!("{}m", minutes)
-        }
+        })
     }
 }
 
+/// Converts Bambu speed level (1-4) to percentage.
 fn speed_level_to_percent(level: u8) -> u32 {
-    // Bambu speed levels: 1=silent, 2=standard, 3=sport, 4=ludicrous
     match level {
-        1 => 50,
-        2 => 100,
-        3 => 124,
-        4 => 166,
-        _ => 100,
+        1 => SPEED_SILENT,
+        2 => SPEED_STANDARD,
+        3 => SPEED_SPORT,
+        4 => SPEED_LUDICROUS,
+        _ => SPEED_STANDARD,
     }
 }

@@ -33,7 +33,7 @@ impl Config {
             .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
 
         let config: Config = toml::from_str(&content)
-            .with_context(|| "Failed to parse config file")?;
+            .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?;
 
         Ok(Some(config))
     }
@@ -46,8 +46,7 @@ impl Config {
                 .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .with_context(|| "Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).with_context(|| "Failed to serialize config")?;
 
         fs::write(&config_path, content)
             .with_context(|| format!("Failed to write config file: {:?}", config_path))?;

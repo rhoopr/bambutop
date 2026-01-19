@@ -53,9 +53,11 @@ async fn main() -> Result<()> {
     }
 
     // Build config from CLI args, config file, or wizard
-    let config = if let (Some(ip), Some(serial), Some(access_code)) =
-        (args.ip.as_ref(), args.serial.as_ref(), args.access_code.as_ref())
-    {
+    let config = if let (Some(ip), Some(serial), Some(access_code)) = (
+        args.ip.as_ref(),
+        args.serial.as_ref(),
+        args.access_code.as_ref(),
+    ) {
         // All CLI args provided - use them and save to config
         let config = config::Config {
             printer: config::PrinterConfig {
@@ -106,7 +108,14 @@ async fn main() -> Result<()> {
 
     // Main loop
     let tick_rate = Duration::from_millis(250);
-    let result = run_app(&mut terminal, &mut app, &mut mqtt_rx, tick_rate, &mqtt_client).await;
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        &mut mqtt_rx,
+        tick_rate,
+        &mqtt_client,
+    )
+    .await;
 
     // Restore terminal
     disable_raw_mode()?;

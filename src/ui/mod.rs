@@ -9,13 +9,16 @@ use ratatui::{
     Frame,
 };
 
+/// Maximum content width for the UI (characters)
+const MAX_CONTENT_WIDTH: u16 = 100;
+
+/// Renders the main application UI with header, progress, temps, AMS, and help bar.
 pub fn render(frame: &mut Frame, app: &App) {
-    // Limit width to 100, center horizontally
-    let max_width = 100u16;
+    // Limit width and center horizontally
     let area = frame.area();
-    let content_area = if area.width > max_width {
-        let padding = (area.width - max_width) / 2;
-        Rect::new(area.x + padding, area.y, max_width, area.height)
+    let content_area = if area.width > MAX_CONTENT_WIDTH {
+        let padding = (area.width - MAX_CONTENT_WIDTH) / 2;
+        Rect::new(area.x + padding, area.y, MAX_CONTENT_WIDTH, area.height)
     } else {
         area
     };
@@ -23,11 +26,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),   // Header (status + system info)
-            Constraint::Length(7),   // Progress (job, spacer, info, bar, spacer)
-            Constraint::Length(11),  // Temps + AMS row (fixed height)
-            Constraint::Min(1),      // Spacer (absorbs extra space)
-            Constraint::Length(1),   // Help bar
+            Constraint::Length(4),  // Header (status + system info)
+            Constraint::Length(7),  // Progress (job, spacer, info, bar, spacer)
+            Constraint::Length(11), // Temps + AMS row (fixed height)
+            Constraint::Min(1),     // Spacer (absorbs extra space)
+            Constraint::Length(1),  // Help bar
         ])
         .split(content_area);
 
@@ -50,35 +53,38 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
+    use std::borrow::Cow;
 
     let refresh_status = if app.auto_refresh {
-        Span::styled(" ON ", Style::default().fg(Color::Black).bg(Color::Green))
+        Span::styled(" ON ", Style::new().fg(Color::Black).bg(Color::Green))
     } else {
-        Span::styled(" OFF ", Style::default().fg(Color::Black).bg(Color::Red))
+        Span::styled(" OFF ", Style::new().fg(Color::Black).bg(Color::Red))
     };
 
-    let last_update = app
+    let last_update: Cow<'static, str> = app
         .time_since_update()
-        .map(|d| format!("  Updated {}s ago", d.as_secs()))
-        .unwrap_or_else(|| "  No data yet".to_string());
+        .map(|d| Cow::Owned(format!("  Updated {}s ago", d.as_secs())))
+        .unwrap_or(Cow::Borrowed("  No data yet"));
 
     let help = Line::from(vec![
         Span::styled(
             " BAMBUTOP ",
-            Style::default()
+            Style::new()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::styled("q", Style::new().fg(Color::Yellow)),
         Span::raw(" Quit  "),
-        Span::styled("r", Style::default().fg(Color::Yellow)),
+        Span::styled("r", Style::new().fg(Color::Yellow)),
         Span::raw(" Auto-Refresh "),
         refresh_status,
         Span::styled(
-            last_update,
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            last_update.into_owned(),
+            Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ),
     ]);
 
