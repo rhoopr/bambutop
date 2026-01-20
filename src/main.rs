@@ -168,24 +168,16 @@ async fn run_app(
 
         // Check for MQTT events (non-blocking)
         while let Ok(event) = mqtt_rx.try_recv() {
-            if app.auto_refresh {
-                app.handle_mqtt_event(event);
-            }
+            app.handle_mqtt_event(event);
         }
 
         // Check for keyboard events
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            app.should_quit = true;
-                        }
-                        KeyCode::Char('r') => {
-                            app.auto_refresh = !app.auto_refresh;
-                        }
-                        _ => {}
-                    }
+                if key.kind == KeyEventKind::Press
+                    && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                {
+                    app.should_quit = true;
                 }
             }
         }

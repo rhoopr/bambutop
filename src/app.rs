@@ -22,8 +22,6 @@ pub struct App {
     pub error_message: Option<String>,
     /// Flag to signal the application should exit
     pub should_quit: bool,
-    /// Whether to automatically refresh state from MQTT events
-    pub auto_refresh: bool,
 }
 
 impl App {
@@ -35,7 +33,6 @@ impl App {
             last_update: None,
             error_message: None,
             should_quit: false,
-            auto_refresh: true,
         }
     }
 

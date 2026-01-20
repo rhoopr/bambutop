@@ -73,7 +73,6 @@ You'll need three pieces of information from your printer:
 | Key | Action |
 |-----|--------|
 | `q` or `Esc` | Quit |
-| `r` | Toggle auto-refresh on/off |
 
 ## Command-Line Options
 

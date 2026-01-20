@@ -72,21 +72,19 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_help_bar(frame, app, chunks[5]);
 }
 
-fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let refresh_status = if app.auto_refresh {
-        Span::styled(" ON ", Style::new().fg(Color::Black).bg(Color::Green))
-    } else {
-        Span::styled(" OFF ", Style::new().fg(Color::Black).bg(Color::Red))
-    };
+/// Application version from Cargo.toml
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     let last_update: Cow<'static, str> = app
         .time_since_update()
-        .map(|d| Cow::Owned(format!("  Updated {}s ago", d.as_secs())))
-        .unwrap_or(Cow::Borrowed("  No data yet"));
+        .map(|d| Cow::Owned(format!("Updated {}s ago ", d.as_secs())))
+        .unwrap_or(Cow::Borrowed("No data yet "));
 
-    let help = Line::from(vec![
+    // Left side: logo with version and quit hint
+    let left = Line::from(vec![
         Span::styled(
-            " BAMBUTOP ",
+            format!(" BAMBUTOP v{} ", VERSION),
             Style::new()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -94,17 +92,23 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled("q", Style::new().fg(Color::Yellow)),
-        Span::raw(" Quit  "),
-        Span::styled("r", Style::new().fg(Color::Yellow)),
-        Span::raw(" Auto-Refresh "),
-        refresh_status,
-        Span::styled(
-            last_update,
-            Style::new()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        ),
+        Span::raw(" Quit"),
     ]);
 
-    frame.render_widget(Paragraph::new(help), area);
+    // Right side: last update time
+    let right = Line::from(vec![Span::styled(
+        last_update,
+        Style::new()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )]);
+
+    // Split area for left and right alignment
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(right.width() as u16)])
+        .split(area);
+
+    frame.render_widget(Paragraph::new(left), chunks[0]);
+    frame.render_widget(Paragraph::new(right), chunks[1]);
 }
