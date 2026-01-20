@@ -41,8 +41,10 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                 )));
             }
 
-            // Spacer above unit
-            lines.push(Line::from(""));
+            // Spacer above unit (skip for first unit to avoid blank space at top)
+            if unit.id > 0 {
+                lines.push(Line::from(""));
+            }
 
             // Unit header with active indicator and Lite badge
             let unit_label = if unit.is_lite {
@@ -52,14 +54,14 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             };
 
             let unit_style = if is_active_unit {
-                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(Color::DarkGray)
             };
 
             let mut header_spans: SmallVec<[Span; 2]> = SmallVec::new();
             if is_active_unit {
-                header_spans.push(Span::styled("▶", Style::new().fg(Color::Green)));
+                header_spans.push(Span::styled("▶", Style::new().fg(Color::White)));
             } else {
                 header_spans.push(Span::styled(" ", Style::new()));
             }
@@ -107,7 +109,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                 }
 
                 humidity_spans.push(Span::styled(" ◆", Style::new().fg(Color::DarkGray)));
-                humidity_spans.push(Span::styled(" Wet", Style::new().fg(Color::DarkGray)));
+                humidity_spans.push(Span::styled(" Wet ", Style::new().fg(Color::DarkGray)));
                 lines.push(Line::from(humidity_spans.into_vec()));
             }
 
@@ -153,12 +155,30 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                     &tray.material
                 };
 
+                let material_style = if is_active_tray {
+                    Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(Color::White)
+                };
+
+                let remaining_style = if is_active_tray {
+                    Style::new().fg(remaining_color).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(remaining_color)
+                };
+
+                let color_style = if is_active_tray {
+                    Style::new().fg(color).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(color)
+                };
+
                 lines.push(Line::from(vec![
                     Span::styled(format!("    {}[{}] ", marker, tray.id + 1), slot_style),
-                    Span::styled("██", Style::new().fg(color)),
+                    Span::styled("██", color_style),
                     Span::raw(" "),
-                    Span::styled(material_display, Style::new().fg(Color::White)),
-                    Span::styled(remaining_text, Style::new().fg(remaining_color)),
+                    Span::styled(material_display, material_style),
+                    Span::styled(remaining_text, remaining_style),
                 ]));
             }
         }
