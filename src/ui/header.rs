@@ -148,6 +148,7 @@ fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
         return vec![
             Span::styled("WiFi: ", Style::new().fg(Color::DarkGray)),
             Span::styled("--", Style::new().fg(Color::DarkGray)),
+            Span::raw(" "),
         ];
     }
 
@@ -168,6 +169,7 @@ fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
         Span::styled(bars, Style::new().fg(color)),
         Span::raw(" "),
         Span::styled(wifi_signal.to_string(), Style::new().fg(color)),
+        Span::raw(" "),
     ]
 }
 

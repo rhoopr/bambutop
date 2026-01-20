@@ -1,3 +1,4 @@
+mod controls;
 mod header;
 mod progress;
 mod status;
@@ -26,30 +27,37 @@ pub fn render(frame: &mut Frame, app: &App) {
         area
     };
 
+    // Calculate temps panel height based on whether printer has chamber sensor
+    let temps_height = temps::panel_height(printer_state.has_chamber_temp_sensor());
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),  // Header (status + system info)
-            Constraint::Length(7),  // Progress (job, spacer, info, bar, spacer)
-            Constraint::Length(11), // Temps + AMS row (fixed height)
-            Constraint::Min(1),     // Spacer (absorbs extra space)
-            Constraint::Length(1),  // Help bar
+            Constraint::Length(4),            // Header (status + system info)
+            Constraint::Length(7),            // Progress (job, spacer, info, bar, spacer)
+            Constraint::Length(temps_height), // Temps + AMS row (dynamic height)
+            Constraint::Length(4),            // Printer Controls
+            Constraint::Min(1),               // Spacer (absorbs extra space)
+            Constraint::Length(1),            // Help bar
         ])
         .split(content_area);
 
     header::render(frame, app, &printer_state, chunks[0]);
     progress::render(frame, &printer_state, chunks[1]);
 
-    // Middle row: temps on left, AMS on right
+    // Middle row: temps on left (flexible), AMS on right (fixed width)
+    // AMS width: 35 inner content + 2 borders = 37
     let middle_row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Min(1), Constraint::Length(37)])
         .split(chunks[2]);
 
     temps::render(frame, &printer_state, middle_row[0]);
     status::render_ams(frame, &printer_state, middle_row[1]);
 
-    render_help_bar(frame, app, chunks[4]);
+    controls::render(frame, &printer_state, chunks[3]);
+
+    render_help_bar(frame, app, chunks[5]);
 }
 
 fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {

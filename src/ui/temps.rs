@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, LineGauge, Paragraph},
     Frame,
 };
 
@@ -19,6 +19,16 @@ const ACTIVE_TEMP_THRESHOLD: f32 = 50.0;
 /// Temperature difference threshold for considering temp "at target"
 const AT_TARGET_THRESHOLD: f32 = 5.0;
 
+/// Returns the required height for the temperatures panel based on printer capabilities.
+/// Includes 2 for borders plus inner content rows.
+pub fn panel_height(has_chamber: bool) -> u16 {
+    if has_chamber {
+        11 // 9 inner rows + 2 borders
+    } else {
+        10 // 8 inner rows + 2 borders
+    }
+}
+
 /// Renders the temperatures panel with nozzle, bed, chamber temps and fan speeds.
 pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let block = Block::default()
@@ -29,38 +39,35 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let has_chamber = printer_state.has_chamber_temp_sensor();
+
+    // Build constraints dynamically based on chamber sensor
+    let mut constraints = vec![Constraint::Length(1)]; // Fans
+    if has_chamber {
+        constraints.push(Constraint::Length(1)); // Chamber
+    }
+    constraints.extend([
+        Constraint::Length(1), // Spacer
+        Constraint::Length(1), // Nozzle text
+        Constraint::Length(1), // Nozzle gauge
+        Constraint::Length(1), // Spacer
+        Constraint::Length(1), // Bed text
+        Constraint::Length(1), // Bed gauge
+        Constraint::Length(1), // Spacer
+    ]);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Chamber
-            Constraint::Length(1), // Fans
-            Constraint::Length(1), // Spacer
-            Constraint::Length(1), // Nozzle text
-            Constraint::Length(1), // Nozzle gauge
-            Constraint::Length(1), // Spacer
-            Constraint::Length(1), // Bed text
-            Constraint::Length(1), // Bed gauge
-            Constraint::Length(1), // Spacer
-        ])
+        .constraints(constraints)
         .split(inner);
 
     let temps = &printer_state.temperatures;
     let speeds = &printer_state.speeds;
 
-    // Chamber temperature (at top) - only show if printer has a sensor
-    if printer_state.has_chamber_temp_sensor() {
-        let chamber_line = Line::from(vec![
-            Span::raw(" "),
-            Span::styled("Chamber: ", Style::new().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{:.0}°C", temps.chamber),
-                Style::new().fg(Color::Cyan),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(chamber_line), chunks[0]);
-    }
+    // Chunk offset: if chamber is present, indices shift by 1 after fans
+    let offset = if has_chamber { 1 } else { 0 };
 
-    // Fan speeds
+    // Fan speeds (always at top)
     let fan_line = Line::from(vec![
         Span::raw(" "),
         Span::styled("Fans: ", Style::new().fg(Color::DarkGray)),
@@ -83,7 +90,20 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             Style::new().fg(Color::Cyan),
         ),
     ]);
-    frame.render_widget(Paragraph::new(fan_line), chunks[1]);
+    frame.render_widget(Paragraph::new(fan_line), chunks[0]);
+
+    // Chamber temperature (second line if present)
+    if has_chamber {
+        let chamber_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Chamber: ", Style::new().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.0}°C", temps.chamber),
+                Style::new().fg(Color::Cyan),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(chamber_line), chunks[1]);
+    }
 
     // Nozzle temperature
     render_temp_gauge(
@@ -95,8 +115,8 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             max_temp: MAX_NOZZLE_TEMP,
             active_color: Color::Red,
         },
-        chunks[3],
-        chunks[4],
+        chunks[2 + offset],
+        chunks[3 + offset],
     );
 
     // Bed temperature
@@ -109,8 +129,8 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             max_temp: MAX_BED_TEMP,
             active_color: Color::Magenta,
         },
-        chunks[6],
-        chunks[7],
+        chunks[5 + offset],
+        chunks[6 + offset],
     );
 }
 
@@ -132,7 +152,7 @@ fn render_temp_gauge(
     text_area: Rect,
     gauge_area: Rect,
 ) {
-    let color =
+    let temp_color =
         if config.target > 0.0 && (config.current - config.target).abs() < AT_TARGET_THRESHOLD {
             Color::Green
         } else if config.current > ACTIVE_TEMP_THRESHOLD {
@@ -141,19 +161,19 @@ fn render_temp_gauge(
             Color::DarkGray
         };
 
-    let text = if config.target > 0.0 {
-        format!(
-            " {}: {:.0}°C / {:.0}°C",
-            config.label, config.current, config.target
-        )
+    let temp_value = if config.target > 0.0 {
+        format!("{:.0}°C / {:.0}°C", config.current, config.target)
     } else {
-        format!(" {}: {:.0}°C", config.label, config.current)
+        format!("{:.0}°C", config.current)
     };
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(text, Style::new().fg(color))),
-        text_area,
-    );
+    let text_line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(format!("{}: ", config.label), Style::new().fg(Color::DarkGray)),
+        Span::styled(temp_value, Style::new().fg(temp_color)),
+    ]);
+
+    frame.render_widget(Paragraph::new(text_line), text_area);
 
     let ratio = if config.target > 0.0 {
         (config.current / config.target).min(1.0) as f64
@@ -161,9 +181,16 @@ fn render_temp_gauge(
         (config.current / config.max_temp) as f64
     };
 
-    let gauge = Gauge::default()
-        .gauge_style(Style::new().fg(color).bg(Color::DarkGray))
+    let gauge = LineGauge::default()
+        .filled_style(Style::new().fg(temp_color))
+        .unfilled_style(Style::new().fg(Color::DarkGray))
         .ratio(ratio)
         .label("");
-    frame.render_widget(gauge, gauge_area);
+
+    // Add right padding
+    let padded_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(gauge_area);
+    frame.render_widget(gauge, padded_area[0]);
 }
