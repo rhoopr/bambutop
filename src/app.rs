@@ -1,3 +1,9 @@
+//! Application state management for the TUI.
+//!
+//! This module contains the [`App`] struct which manages the connection state,
+//! printer data, and UI preferences. It serves as the central state container
+//! that bridges MQTT events with the terminal UI.
+
 use crate::mqtt::{MqttEvent, SharedPrinterState};
 use crate::printer::PrinterState;
 use std::time::{Duration, Instant};

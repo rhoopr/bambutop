@@ -1,3 +1,9 @@
+//! First-run setup wizard for printer configuration.
+//!
+//! Provides an interactive terminal wizard that prompts users for their
+//! Bambu printer's IP address, serial number, and access code. Validates
+//! input and saves the configuration for subsequent runs.
+
 use crate::config::{Config, PrinterConfig};
 use anyhow::{Context, Result};
 use std::io::{self, Write};
@@ -31,7 +37,7 @@ pub fn run_setup_wizard() -> Result<Config> {
             ip,
             serial,
             access_code,
-            port: 8883,
+            port: crate::config::DEFAULT_MQTT_PORT,
         },
     };
 
@@ -130,13 +136,13 @@ fn prompt(label: &str) -> Result<String> {
         io::stdin()
             .read_line(&mut input)
             .context("Failed to read user input")?;
-        let input = input.trim().to_string();
 
-        if input.is_empty() {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
             println!("  This field is required. Please enter a value.");
             continue;
         }
 
-        return Ok(input);
+        return Ok(trimmed.to_string());
     }
 }

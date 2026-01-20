@@ -1,3 +1,9 @@
+//! Terminal UI rendering for bambutop.
+//!
+//! This module provides the main layout and rendering logic for the TUI.
+//! The UI is composed of several panels: header (status/WiFi), progress bar,
+//! temperature gauges, AMS filament status, printer controls, and a help bar.
+
 mod controls;
 mod header;
 mod progress;
@@ -7,8 +13,12 @@ mod temps;
 use crate::app::App;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
     Frame,
 };
+use std::borrow::Cow;
 
 /// Maximum content width for the UI (characters)
 const MAX_CONTENT_WIDTH: u16 = 100;
@@ -27,8 +37,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         area
     };
 
-    // Calculate temps panel height based on whether printer has chamber sensor
-    let temps_height = temps::panel_height(printer_state.has_chamber_temp_sensor());
+    // Calculate temps panel height based on chamber sensor and active tray
+    let has_chamber = printer_state.has_chamber_temp_sensor();
+    let has_active_tray = printer_state.active_filament_type().is_some();
+    let temps_height = temps::panel_height(has_chamber, has_active_tray);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -61,11 +73,6 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
-    use ratatui::style::{Color, Modifier, Style};
-    use ratatui::text::{Line, Span};
-    use ratatui::widgets::Paragraph;
-    use std::borrow::Cow;
-
     let refresh_status = if app.auto_refresh {
         Span::styled(" ON ", Style::new().fg(Color::Black).bg(Color::Green))
     } else {

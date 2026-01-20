@@ -1,3 +1,8 @@
+//! Printer controls panel rendering.
+//!
+//! Displays the current print speed setting (Silent, Standard, Sport, Ludicrous)
+//! as a percentage.
+
 use crate::printer::PrinterState;
 use ratatui::{
     layout::Rect,
@@ -47,5 +52,29 @@ fn speed_level_to_percent(level: u8) -> u32 {
         3 => SPEED_SPORT,
         4 => SPEED_LUDICROUS,
         _ => SPEED_STANDARD,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod speed_level_to_percent_tests {
+        use super::*;
+
+        #[test]
+        fn converts_known_speed_levels() {
+            assert_eq!(speed_level_to_percent(1), 50); // Silent
+            assert_eq!(speed_level_to_percent(2), 100); // Standard
+            assert_eq!(speed_level_to_percent(3), 124); // Sport
+            assert_eq!(speed_level_to_percent(4), 166); // Ludicrous
+        }
+
+        #[test]
+        fn defaults_unknown_levels_to_standard() {
+            assert_eq!(speed_level_to_percent(0), 100);
+            assert_eq!(speed_level_to_percent(5), 100);
+            assert_eq!(speed_level_to_percent(255), 100);
+        }
     }
 }
