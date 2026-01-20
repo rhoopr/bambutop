@@ -398,23 +398,38 @@ impl PrinterState {
         self.printer_model = model_from_serial(serial).to_string();
     }
 
+    /// Returns the material type of the currently active AMS tray.
+    ///
+    /// Returns `None` if:
+    /// - No AMS is present
+    /// - No tray is currently selected (external spool or idle)
+    /// - The active tray has no material loaded
+    pub fn active_filament_type(&self) -> Option<&str> {
+        let ams = self.ams.as_ref()?;
+        let unit_idx = ams.current_unit? as usize;
+        let tray_idx = ams.current_tray? as usize;
+
+        let unit = ams.units.get(unit_idx)?;
+        let tray = unit.trays.get(tray_idx)?;
+
+        if tray.material.is_empty() {
+            None
+        } else {
+            Some(&tray.material)
+        }
+    }
+
     /// Returns true if this printer model has a chamber temperature sensor.
     /// X1 series, P2S, and H2 series have sensors.
     /// P1P, P1S, A1, and A1 Mini do not.
     pub fn has_chamber_temp_sensor(&self) -> bool {
-        // TODO: Remove this override after UI testing
-        return true;
-
-        #[allow(unreachable_code)]
-        {
-            let model = self.printer_model.to_uppercase();
-            model.contains("X1C")
-                || model.contains("X1E")
-                || model.contains("P2S")
-                || model.contains("H2C")
-                || model.contains("H2S")
-                || model.contains("H2D")
-        }
+        let model = self.printer_model.to_uppercase();
+        model.contains("X1C")
+            || model.contains("X1E")
+            || model.contains("P2S")
+            || model.contains("H2C")
+            || model.contains("H2S")
+            || model.contains("H2D")
     }
 
     fn update_ams(&mut self, report: &AmsReport) {
@@ -1251,6 +1266,121 @@ mod tests {
 
             let ams = state.ams.as_ref().unwrap();
             assert_eq!(ams.units[0].trays[0].remaining, 0);
+        }
+    }
+
+    mod active_filament_type_tests {
+        use super::*;
+
+        #[test]
+        fn returns_none_when_no_ams() {
+            let state = PrinterState::default();
+            assert_eq!(state.active_filament_type(), None);
+        }
+
+        #[test]
+        fn returns_none_when_no_tray_selected() {
+            let state = PrinterState {
+                ams: Some(AmsState {
+                    units: vec![AmsUnit {
+                        id: 0,
+                        humidity: 4,
+                        trays: vec![AmsTray {
+                            id: 0,
+                            material: "PLA".to_string(),
+                            remaining: 100,
+                            parsed_color: None,
+                        }],
+                        is_lite: false,
+                    }],
+                    current_unit: None,
+                    current_tray: None,
+                }),
+                ..Default::default()
+            };
+            assert_eq!(state.active_filament_type(), None);
+        }
+
+        #[test]
+        fn returns_material_when_tray_selected() {
+            let state = PrinterState {
+                ams: Some(AmsState {
+                    units: vec![AmsUnit {
+                        id: 0,
+                        humidity: 4,
+                        trays: vec![AmsTray {
+                            id: 0,
+                            material: "PETG".to_string(),
+                            remaining: 85,
+                            parsed_color: None,
+                        }],
+                        is_lite: false,
+                    }],
+                    current_unit: Some(0),
+                    current_tray: Some(0),
+                }),
+                ..Default::default()
+            };
+            assert_eq!(state.active_filament_type(), Some("PETG"));
+        }
+
+        #[test]
+        fn returns_none_when_tray_empty() {
+            let state = PrinterState {
+                ams: Some(AmsState {
+                    units: vec![AmsUnit {
+                        id: 0,
+                        humidity: 4,
+                        trays: vec![AmsTray {
+                            id: 0,
+                            material: String::new(), // Empty tray
+                            remaining: 0,
+                            parsed_color: None,
+                        }],
+                        is_lite: false,
+                    }],
+                    current_unit: Some(0),
+                    current_tray: Some(0),
+                }),
+                ..Default::default()
+            };
+            assert_eq!(state.active_filament_type(), None);
+        }
+
+        #[test]
+        fn handles_multi_unit_selection() {
+            let state = PrinterState {
+                ams: Some(AmsState {
+                    units: vec![
+                        AmsUnit {
+                            id: 0,
+                            humidity: 4,
+                            trays: vec![AmsTray {
+                                id: 0,
+                                material: "PLA".to_string(),
+                                remaining: 100,
+                                parsed_color: None,
+                            }],
+                            is_lite: false,
+                        },
+                        AmsUnit {
+                            id: 1,
+                            humidity: 3,
+                            trays: vec![AmsTray {
+                                id: 0,
+                                material: "ABS".to_string(),
+                                remaining: 50,
+                                parsed_color: None,
+                            }],
+                            is_lite: false,
+                        },
+                    ],
+                    current_unit: Some(1), // Second unit selected
+                    current_tray: Some(0),
+                }),
+                ..Default::default()
+            };
+            assert_eq!(state.active_filament_type(), Some("ABS"));
         }
     }
 }

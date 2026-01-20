@@ -1,3 +1,9 @@
+//! AMS (Automatic Material System) status panel rendering.
+//!
+//! Displays filament slots, materials, colors, remaining percentages,
+//! and humidity levels for connected AMS units. Highlights the currently
+//! active filament slot.
+
 use crate::printer::PrinterState;
 use ratatui::{
     layout::Rect,
@@ -13,6 +19,9 @@ const AMS_LINES_ESTIMATE: usize = 20;
 
 /// Orange color for humidity grade D
 const COLOR_ORANGE: Color = Color::Rgb(255, 165, 0);
+
+/// Humidity grade labels as static strings to avoid allocation in render loop
+const HUMIDITY_GRADES: [&str; 5] = ["A", "B", "C", "D", "E"];
 
 /// Renders the AMS (Automatic Material System) status panel.
 pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
@@ -89,20 +98,22 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                 humidity_spans.push(Span::styled("Dry ", Style::new().fg(Color::DarkGray)));
                 humidity_spans.push(Span::styled("◆ ", Style::new().fg(Color::DarkGray)));
 
-                for (i, grade) in ['A', 'B', 'C', 'D', 'E'].iter().enumerate() {
-                    let grade_color = match grade {
-                        'A' | 'B' => Color::Green,
-                        'C' => Color::Yellow,
-                        'D' => COLOR_ORANGE,
-                        'E' => Color::Red,
+                for (i, &grade_str) in HUMIDITY_GRADES.iter().enumerate() {
+                    let grade_color = match i {
+                        0 | 1 => Color::Green, // A, B
+                        2 => Color::Yellow,    // C
+                        3 => COLOR_ORANGE,     // D
+                        4 => Color::Red,       // E
                         _ => Color::DarkGray,
                     };
-                    let style = if *grade == current_grade {
+                    // Compare grade char: 'A' + index gives 'A', 'B', 'C', 'D', 'E'
+                    let grade_char = (b'A' + i as u8) as char;
+                    let style = if grade_char == current_grade {
                         Style::new().fg(grade_color).add_modifier(Modifier::BOLD)
                     } else {
                         Style::new().fg(Color::DarkGray)
                     };
-                    humidity_spans.push(Span::styled(grade.to_string(), style));
+                    humidity_spans.push(Span::styled(grade_str, style));
                     if i < 4 {
                         humidity_spans.push(Span::styled("-", Style::new().fg(Color::DarkGray)));
                     }
@@ -162,7 +173,9 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                 };
 
                 let remaining_style = if is_active_tray {
-                    Style::new().fg(remaining_color).add_modifier(Modifier::BOLD)
+                    Style::new()
+                        .fg(remaining_color)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::new().fg(remaining_color)
                 };

@@ -22,6 +22,9 @@ use std::time::Duration;
 /// Flag to track whether terminal is in raw mode (for panic hook)
 static TERMINAL_IN_RAW_MODE: AtomicBool = AtomicBool::new(false);
 
+/// UI refresh rate - how often to poll for events and redraw
+const UI_TICK_RATE: Duration = Duration::from_millis(250);
+
 #[derive(Parser, Debug)]
 #[command(name = "bambutop")]
 #[command(about = "Terminal-based status monitor for Bambu Labs printers")]
@@ -68,7 +71,7 @@ async fn main() -> Result<()> {
                 ip: ip.clone(),
                 serial: serial.clone(),
                 access_code: access_code.clone(),
-                port: 8883,
+                port: config::DEFAULT_MQTT_PORT,
             },
         };
         config.save()?;
@@ -125,12 +128,11 @@ async fn main() -> Result<()> {
     mqtt_client.request_full_status().await?;
 
     // Main loop
-    let tick_rate = Duration::from_millis(250);
     let result = run_app(
         &mut terminal,
         &mut app,
         &mut mqtt_rx,
-        tick_rate,
+        UI_TICK_RATE,
         &mqtt_client,
     )
     .await;
@@ -157,11 +159,10 @@ async fn run_app(
     app: &mut App,
     mqtt_rx: &mut tokio::sync::mpsc::Receiver<mqtt::MqttEvent>,
     tick_rate: Duration,
-    mqtt_client: &MqttClient,
+    _mqtt_client: &MqttClient,
 ) -> Result<()> {
-    // mqtt_client is held here to keep the MQTT connection alive;
-    // dropping it triggers graceful shutdown of the event loop task
-    let _ = mqtt_client;
+    // Note: _mqtt_client is passed by reference to keep the MQTT connection alive;
+    // dropping it triggers graceful shutdown of the event loop task.
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 

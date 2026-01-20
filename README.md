@@ -8,11 +8,13 @@ A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for yo
 
 ## What You Can Monitor
 
-- **Print Progress** — Job name, speed, layer count, and time remaining
+- **Print Progress** — Job name, layer count, and time remaining with progress bar
 - **Temperatures** — Nozzle, bed, and chamber with visual gauges
-- **Fan Speeds** — Part cooling, auxiliary, and chamber fans
-- **AMS Status** — Humidity levels and filament info for each slot
-- **HMS Errors** — Health Management System notifications
+- **Smart Chamber Display** — Shows safe temperature range based on active filament type (PLA, PETG, ABS, etc.)
+- **Fan Speeds** — Part cooling, auxiliary, and chamber fan percentages
+- **Printer Controls** — Current speed setting (Silent/Standard/Sport/Ludicrous)
+- **AMS Status** — Humidity grade (A-E), filament colors, materials, and remaining percentages with active slot highlighting
+- **HMS Errors** — Health Management System notifications with severity coloring
 
 ## Supported Printers
 

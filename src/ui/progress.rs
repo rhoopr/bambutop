@@ -1,3 +1,8 @@
+//! Print progress panel rendering.
+//!
+//! Displays the current print job name, progress percentage, layer count,
+//! time remaining, and a visual progress bar.
+
 use crate::printer::PrinterState;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,6 +12,9 @@ use ratatui::{
     Frame,
 };
 use std::borrow::Cow;
+
+/// Maximum display length for job names before truncation
+const MAX_JOB_NAME_DISPLAY_LEN: usize = 70;
 
 /// Renders the print progress panel showing job name, progress, layer, time remaining, and progress bar.
 pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
@@ -46,7 +54,7 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
         Span::raw(" "),
         Span::styled("Job: ", Style::new().fg(Color::DarkGray)),
         Span::styled(
-            truncate_str(&job_display, 70).into_owned(),
+            truncate_str(&job_display, MAX_JOB_NAME_DISPLAY_LEN),
             Style::new().fg(Color::White),
         ),
     ]);
@@ -55,22 +63,28 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     // Progress, Layer and time remaining
     let time_remaining = format_time(print_status.remaining_time_mins);
 
-    let layer_value = if print_status.total_layers > 0 {
-        format!("{}/{}", print_status.layer_num, print_status.total_layers)
+    let layer_value: Cow<'static, str> = if print_status.total_layers > 0 {
+        Cow::Owned(format!(
+            "{}/{}",
+            print_status.layer_num, print_status.total_layers
+        ))
     } else {
-        "-/-".to_string()
+        Cow::Borrowed("-/-")
     };
 
     let info_line = Line::from(vec![
         Span::raw(" "),
         Span::styled("Progress: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(format!("{}%", print_status.progress), Style::new().fg(Color::Cyan)),
+        Span::styled(
+            format!("{}%", print_status.progress),
+            Style::new().fg(Color::Cyan),
+        ),
         Span::raw("  "),
         Span::styled("Layer: ", Style::new().fg(Color::DarkGray)),
         Span::styled(layer_value, Style::new().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled("Remaining: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(time_remaining.into_owned(), Style::new().fg(Color::Cyan)),
+        Span::styled(time_remaining, Style::new().fg(Color::Cyan)),
     ]);
     frame.render_widget(Paragraph::new(info_line), chunks[2]);
 
@@ -173,5 +187,4 @@ mod tests {
             assert_eq!(result, "25h 0m");
         }
     }
-
 }

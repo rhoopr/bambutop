@@ -1,3 +1,8 @@
+//! Header panel rendering with printer status and system info.
+//!
+//! Displays the printer model, connection status, HMS errors, and WiFi signal
+//! strength with visual indicators and color coding.
+
 use crate::app::App;
 use crate::printer::PrinterState;
 use ratatui::{
@@ -136,7 +141,10 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 /// - Strong: > -50dBm (green)
 /// - Medium: -50 to -70dBm (yellow)
 /// - Weak: < -70dBm (red)
-fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
+///
+/// Uses a lifetime parameter to borrow the wifi_signal string directly,
+/// avoiding allocation on every render frame.
+fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
     /// Visual bars for strong WiFi signal
     const BARS_STRONG: &str = "\u{2582}\u{2584}\u{2586}\u{2588}";
     /// Visual bars for medium WiFi signal
@@ -168,7 +176,7 @@ fn render_wifi_signal(wifi_signal: &str) -> Vec<Span<'static>> {
         Span::styled("WiFi: ", Style::new().fg(Color::DarkGray)),
         Span::styled(bars, Style::new().fg(color)),
         Span::raw(" "),
-        Span::styled(wifi_signal.to_string(), Style::new().fg(color)),
+        Span::styled(wifi_signal, Style::new().fg(color)),
         Span::raw(" "),
     ]
 }
