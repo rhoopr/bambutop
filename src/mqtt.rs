@@ -83,7 +83,10 @@ pub enum MqttEvent {
     /// Printer state has been updated (read from shared state)
     StateUpdated { printer_index: usize },
     /// An error occurred for a specific printer
-    Error { message: String },
+    Error {
+        printer_index: usize,
+        message: String,
+    },
 }
 
 /// Shared printer state that can be accessed by both the MQTT task and the UI.
@@ -101,24 +104,47 @@ pub struct MqttClient {
 }
 
 impl MqttClient {
-    /// Connects to the printer's MQTT broker and starts the event loop.
+    /// Connects to a printer's MQTT broker and starts the event loop.
     ///
     /// Returns the client, a shared printer state, and a receiver for MQTT events.
     /// The shared state is updated directly by the MQTT task, eliminating the need
     /// to clone the entire state on every message.
+    ///
+    /// # Arguments
+    /// * `config` - Printer connection configuration
+    /// * `printer_index` - Index of this printer (for multi-printer support)
+    /// * `event_tx` - Optional shared event sender. If provided, events are sent to this
+    ///   channel instead of creating a new one. This allows aggregating events from
+    ///   multiple printers into a single channel.
+    ///
+    /// # Returns
+    /// Returns the client, shared printer state, and optionally a new receiver if
+    /// `event_tx` was None.
     pub async fn connect(
         config: PrinterConfig,
-    ) -> Result<(Self, SharedPrinterState, mpsc::Receiver<MqttEvent>)> {
-        let printer_index = 0;
-        let (tx, rx) = mpsc::channel(100);
+        printer_index: usize,
+        event_tx: Option<mpsc::Sender<MqttEvent>>,
+    ) -> Result<(Self, SharedPrinterState, Option<mpsc::Receiver<MqttEvent>>)> {
+        // Use provided sender or create a new channel
+        let (tx, rx) = match event_tx {
+            Some(sender) => (sender, None),
+            None => {
+                let (sender, receiver) = mpsc::channel(100);
+                (sender, Some(receiver))
+            }
+        };
 
         // Create shared state
         let state = Arc::new(Mutex::new(PrinterState::default()));
 
-        // Initialize model from serial
+        // Initialize state from config
         {
             let mut state_guard = state.lock().expect("state lock poisoned");
             state_guard.set_model_from_serial(&config.serial);
+            // Set config name if provided
+            if let Some(name) = &config.name {
+                state_guard.printer_name.clone_from(name);
+            }
         }
 
         let client_id = format!("bambutop_{}_{}", std::process::id(), printer_index);
@@ -141,7 +167,7 @@ impl MqttClient {
 
         // Clone for the spawned task
         let state_clone = Arc::clone(&state);
-        let tx_clone = tx.clone();
+        let tx_clone = tx;
 
         // Spawn event loop handler
         let event_loop_handle = tokio::spawn(async move {
@@ -183,6 +209,7 @@ impl MqttClient {
                             .await;
                         let _ = tx_clone
                             .send(MqttEvent::Error {
+                                printer_index,
                                 message: format!(
                                     "MQTT error: {} (reconnecting in {}s)",
                                     e,
@@ -219,6 +246,22 @@ impl MqttClient {
             },
             state,
             rx,
+        ))
+    }
+
+    /// Convenience method for connecting to a single printer.
+    ///
+    /// This is equivalent to calling `connect(config, 0, None)` and is provided
+    /// for backwards compatibility and simpler single-printer usage.
+    #[allow(dead_code)] // Kept for backwards compatibility with single-printer usage
+    pub async fn connect_single(
+        config: PrinterConfig,
+    ) -> Result<(Self, SharedPrinterState, mpsc::Receiver<MqttEvent>)> {
+        let (client, state, rx) = Self::connect(config, 0, None).await?;
+        Ok((
+            client,
+            state,
+            rx.expect("receiver should exist when event_tx is None"),
         ))
     }
 
