@@ -69,11 +69,13 @@ async fn main() -> Result<()> {
         // All CLI args provided - use them and save to config
         let config = config::Config {
             printer: config::PrinterConfig {
+                name: None,
                 ip: ip.clone(),
                 serial: serial.clone(),
                 access_code: access_code.clone(),
                 port: config::DEFAULT_MQTT_PORT,
             },
+            extra_printers: vec![],
         };
         config.save()?;
         config
