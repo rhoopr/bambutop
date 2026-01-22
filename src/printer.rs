@@ -71,6 +71,10 @@ pub struct PrinterState {
     pub hms_errors: SmallVec<[HmsError; 4]>,
 }
 
+/// Temperature threshold (in degrees C) below target that indicates heating is in progress.
+/// If current temp is more than this amount below target, we consider it "heating".
+const HEATING_THRESHOLD: f32 = 5.0;
+
 #[derive(Debug, Clone, Default)]
 pub struct PrintStatus {
     pub gcode_file: String,
@@ -83,6 +87,8 @@ pub struct PrintStatus {
     pub remaining_time_mins: u32,
     pub gcode_state: String,
     pub print_type: String,
+    /// Current print stage code from printer (stg_cur field)
+    pub stage_code: i32,
 }
 
 impl PrintStatus {
@@ -150,6 +156,85 @@ impl PrintStatus {
         let profile_terms = ["pla", "petg", "abs", "tpu", "draft", "quality", "strength"];
         let term_count = profile_terms.iter().filter(|t| lower.contains(*t)).count();
         term_count >= 2
+    }
+
+    /// Returns true if a print job is currently active (running or paused).
+    pub fn is_active(&self) -> bool {
+        matches!(self.gcode_state.as_str(), "RUNNING" | "PAUSE")
+    }
+
+    /// Determines the current print phase based on stage code and temperatures.
+    ///
+    /// Returns a human-readable phase description such as "Heating Bed", "Auto-Leveling",
+    /// "Printing", etc. Uses the printer's stage code (stg_cur) when available,
+    /// with fallback to temperature-based inference.
+    ///
+    /// # Arguments
+    /// * `temps` - Current temperature readings to determine heating phases
+    ///
+    /// # Returns
+    /// A static string describing the current phase, or `None` if no phase applies.
+    pub fn print_phase(&self, temps: &Temperatures) -> Option<&'static str> {
+        // Only show phase during active jobs
+        if !self.is_active() {
+            return None;
+        }
+
+        // Use stage code if available (more accurate than temperature inference)
+        // Bambu stg_cur codes based on protocol documentation:
+        // 0 = Idle/Printing, 1 = Auto bed leveling, 2 = Heatbed preheating,
+        // 3 = Sweeping XY mech mode, 4 = Changing filament, 5 = M400 pause,
+        // 6 = Paused due to filament runout, 7 = Heating hotend,
+        // 8 = Calibrating extrusion, 9 = Scanning bed surface,
+        // 10 = Inspecting first layer, 11 = Identifying build plate type,
+        // 12 = Calibrating Micro Lidar, 13 = Homing toolhead,
+        // 14 = Cleaning nozzle tip, 15 = Checking extruder temperature,
+        // 16 = Printing paused by user, 17 = Pause due to front cover falling,
+        // 18 = Calibrating the micro lidar, 19 = Calibrating extrusion flow,
+        // 20 = Paused due to nozzle temperature malfunction,
+        // 21 = Paused due to heat bed temperature malfunction
+        // -1 = Idle (no stage), actual printing uses stage_code 0 with progress > 0
+        match self.stage_code {
+            1 => return Some("Auto-Leveling"),
+            2 => return Some("Heating Bed"),
+            7 => return Some("Heating Nozzle"),
+            8 | 19 => return Some("Calibrating Extrusion"),
+            9 => return Some("Scanning Bed"),
+            10 => return Some("Inspecting First Layer"),
+            11 => return Some("Identifying Build Plate"),
+            12 | 18 => return Some("Calibrating Lidar"),
+            13 => return Some("Homing"),
+            14 => return Some("Cleaning Nozzle"),
+            15 => return Some("Checking Temperature"),
+            4 => return Some("Changing Filament"),
+            5 | 16 => return Some("Paused"),
+            6 => return Some("Filament Runout"),
+            3 => return Some("Sweeping XY"),
+            17 => return Some("Cover Open"),
+            20 | 21 => return Some("Temperature Error"),
+            _ => {}
+        }
+
+        // Fallback: infer from temperatures when stage code doesn't indicate a specific phase
+        // This handles cases where stg_cur is 0 (printing/idle) or -1 (no stage)
+
+        // Check if bed is still heating (target set but not reached)
+        if temps.bed_target > 0.0 && temps.bed < temps.bed_target - HEATING_THRESHOLD {
+            return Some("Heating Bed");
+        }
+
+        // Check if nozzle is still heating (target set but not reached)
+        if temps.nozzle_target > 0.0 && temps.nozzle < temps.nozzle_target - HEATING_THRESHOLD {
+            return Some("Heating Nozzle");
+        }
+
+        // If we have progress and layer info, we're actively printing
+        if self.progress > 0 || self.layer_num > 0 {
+            return Some("Printing");
+        }
+
+        // Default: preparing (active job but haven't started printing yet)
+        Some("Preparing")
     }
 }
 
@@ -254,6 +339,10 @@ pub struct PrintReport {
     pub remaining_time: Option<u32>,
     pub gcode_state: Option<String>,
     pub print_type: Option<String>,
+    /// Current stage code (stg_cur): indicates what the printer is doing
+    /// Common values: 0=idle, 1=auto-leveling, 2=heatbed preheating,
+    /// 6=cleaning nozzle, 7=calibrating extrusion, 14=printing, etc.
+    pub stg_cur: Option<i32>,
 
     // Temperatures
     pub nozzle_temper: Option<f32>,
@@ -358,6 +447,9 @@ impl PrinterState {
         }
         if let Some(v) = &report.print_type {
             self.print_status.print_type.clone_from(v);
+        }
+        if let Some(v) = report.stg_cur {
+            self.print_status.stage_code = v;
         }
 
         // Temperatures
@@ -1474,6 +1566,207 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(state.active_filament_type(), Some("ABS"));
+        }
+    }
+
+    mod is_active_tests {
+        use super::*;
+
+        #[test]
+        fn running_state_is_active() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                ..Default::default()
+            };
+            assert!(status.is_active());
+        }
+
+        #[test]
+        fn pause_state_is_active() {
+            let status = PrintStatus {
+                gcode_state: "PAUSE".to_string(),
+                ..Default::default()
+            };
+            assert!(status.is_active());
+        }
+
+        #[test]
+        fn idle_state_is_not_active() {
+            let status = PrintStatus {
+                gcode_state: "IDLE".to_string(),
+                ..Default::default()
+            };
+            assert!(!status.is_active());
+        }
+
+        #[test]
+        fn finish_state_is_not_active() {
+            let status = PrintStatus {
+                gcode_state: "FINISH".to_string(),
+                ..Default::default()
+            };
+            assert!(!status.is_active());
+        }
+
+        #[test]
+        fn empty_state_is_not_active() {
+            let status = PrintStatus::default();
+            assert!(!status.is_active());
+        }
+    }
+
+    mod print_phase_tests {
+        use super::*;
+
+        fn make_running_status(stage_code: i32) -> PrintStatus {
+            PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                stage_code,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn returns_none_when_not_active() {
+            let status = PrintStatus {
+                gcode_state: "IDLE".to_string(),
+                ..Default::default()
+            };
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), None);
+        }
+
+        #[test]
+        fn detects_auto_leveling_from_stage() {
+            let status = make_running_status(1);
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), Some("Auto-Leveling"));
+        }
+
+        #[test]
+        fn detects_bed_heating_from_stage() {
+            let status = make_running_status(2);
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), Some("Heating Bed"));
+        }
+
+        #[test]
+        fn detects_nozzle_heating_from_stage() {
+            let status = make_running_status(7);
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), Some("Heating Nozzle"));
+        }
+
+        #[test]
+        fn detects_cleaning_nozzle_from_stage() {
+            let status = make_running_status(14);
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), Some("Cleaning Nozzle"));
+        }
+
+        #[test]
+        fn detects_homing_from_stage() {
+            let status = make_running_status(13);
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), Some("Homing"));
+        }
+
+        #[test]
+        fn infers_bed_heating_from_temperature() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                stage_code: 0,
+                ..Default::default()
+            };
+            let temps = Temperatures {
+                bed: 30.0,
+                bed_target: 60.0,
+                ..Default::default()
+            };
+            assert_eq!(status.print_phase(&temps), Some("Heating Bed"));
+        }
+
+        #[test]
+        fn infers_nozzle_heating_from_temperature() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                stage_code: 0,
+                ..Default::default()
+            };
+            let temps = Temperatures {
+                bed: 60.0,
+                bed_target: 60.0,
+                nozzle: 150.0,
+                nozzle_target: 220.0,
+                ..Default::default()
+            };
+            assert_eq!(status.print_phase(&temps), Some("Heating Nozzle"));
+        }
+
+        #[test]
+        fn detects_printing_with_progress() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                stage_code: 0,
+                progress: 50,
+                ..Default::default()
+            };
+            let temps = Temperatures {
+                bed: 60.0,
+                bed_target: 60.0,
+                nozzle: 220.0,
+                nozzle_target: 220.0,
+                ..Default::default()
+            };
+            assert_eq!(status.print_phase(&temps), Some("Printing"));
+        }
+
+        #[test]
+        fn detects_printing_with_layers() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                stage_code: 0,
+                layer_num: 5,
+                ..Default::default()
+            };
+            let temps = Temperatures {
+                bed: 60.0,
+                bed_target: 60.0,
+                nozzle: 220.0,
+                nozzle_target: 220.0,
+                ..Default::default()
+            };
+            assert_eq!(status.print_phase(&temps), Some("Printing"));
+        }
+
+        #[test]
+        fn returns_preparing_as_fallback() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                stage_code: 0,
+                progress: 0,
+                layer_num: 0,
+                ..Default::default()
+            };
+            let temps = Temperatures {
+                bed: 60.0,
+                bed_target: 60.0,
+                nozzle: 220.0,
+                nozzle_target: 220.0,
+                ..Default::default()
+            };
+            assert_eq!(status.print_phase(&temps), Some("Preparing"));
+        }
+
+        #[test]
+        fn handles_pause_state() {
+            let status = PrintStatus {
+                gcode_state: "PAUSE".to_string(),
+                stage_code: 16,
+                ..Default::default()
+            };
+            let temps = Temperatures::default();
+            assert_eq!(status.print_phase(&temps), Some("Paused"));
         }
     }
 }
