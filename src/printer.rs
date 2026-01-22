@@ -50,6 +50,8 @@ pub struct PrinterState {
     pub printer_name: String,
     /// Printer model derived from serial number prefix
     pub printer_model: String,
+    /// Last 4 digits of serial number for compact display
+    pub serial_suffix: String,
     /// Current print job status
     pub print_status: PrintStatus,
     /// Temperature readings for nozzle, bed, and chamber
@@ -426,9 +428,16 @@ impl PrinterState {
         }
     }
 
-    /// Set model from serial number prefix
+    /// Set model and serial suffix from serial number.
+    ///
+    /// Derives the printer model from the serial prefix and extracts
+    /// the last 4 digits for compact display in the UI header.
     pub fn set_model_from_serial(&mut self, serial: &str) {
         self.printer_model = model_from_serial(serial).to_string();
+        // Store last 4 characters of serial for compact title display
+        if serial.len() >= 4 {
+            self.serial_suffix = serial[serial.len() - 4..].to_string();
+        }
     }
 
     /// Returns the material type of the currently active AMS tray.

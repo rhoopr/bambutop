@@ -13,6 +13,7 @@ use ratatui::{
     Frame,
 };
 use smallvec::SmallVec;
+use std::borrow::Cow;
 
 /// WiFi signal threshold for strong signal (dBm)
 const WIFI_STRONG_THRESHOLD: i32 = -50;
@@ -22,6 +23,57 @@ const WIFI_MEDIUM_THRESHOLD: i32 = -70;
 
 /// Default dBm value when signal cannot be parsed
 const WIFI_DEFAULT_DBM: i32 = -100;
+
+/// Number of serial number digits to show in compact title
+const SERIAL_SUFFIX_LENGTH: usize = 4;
+
+/// Prefix used in full printer model names from Bambu
+const MODEL_PREFIX: &str = "Bambu Lab ";
+
+/// Formats a compact printer title from model name and optional serial suffix.
+///
+/// Extracts the short model name (e.g., "P1S" from "Bambu Lab P1S") and appends
+/// the last 4 digits of the serial number for identification.
+///
+/// # Examples
+///
+/// - With serial: "Bambu Lab P1S" + "01P00A123456789" -> "P1S ...6789"
+/// - Without serial: "Bambu Lab P1S" + "" -> "P1S"
+/// - Unknown model: "Bambu Printer" + "ABC123450428" -> "Bambu Printer ...0428"
+///
+/// Returns `Cow::Borrowed` when possible to avoid allocations.
+fn format_compact_title<'a>(printer_model: &'a str, serial_suffix: &str) -> Cow<'a, str> {
+    // Extract short model name by removing "Bambu Lab " prefix
+    let short_model = printer_model
+        .strip_prefix(MODEL_PREFIX)
+        .unwrap_or(printer_model);
+
+    if serial_suffix.is_empty() {
+        // No serial suffix available, return just the model name
+        if short_model.len() == printer_model.len() {
+            // No prefix was stripped, return borrowed reference
+            Cow::Borrowed(printer_model)
+        } else {
+            // Prefix was stripped, need to return the slice
+            Cow::Borrowed(short_model)
+        }
+    } else {
+        // Format with serial suffix
+        Cow::Owned(format!("{} ...{}", short_model, serial_suffix))
+    }
+}
+
+/// Extracts the last N characters from a serial number for display.
+///
+/// Returns an empty string if the serial is too short or empty.
+fn extract_serial_suffix(serial: &str) -> &str {
+    let len = serial.len();
+    if len >= SERIAL_SUFFIX_LENGTH {
+        &serial[len - SERIAL_SUFFIX_LENGTH..]
+    } else {
+        ""
+    }
+}
 
 /// Renders the header panel with printer status and system info boxes.
 pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
@@ -46,12 +98,15 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         _ => Color::White,
     };
 
+    // Format compact printer title with model and serial suffix
     let model = if printer_state.printer_model.is_empty() {
         "Bambu Printer"
     } else {
         &printer_state.printer_model
     };
-    let title = format!(" {} ", model);
+    let serial_suffix = extract_serial_suffix(&printer_state.serial_suffix);
+    let compact_title = format_compact_title(model, serial_suffix);
+    let title = format!(" {} ", compact_title);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(status_color))
@@ -284,6 +339,92 @@ mod tests {
         fn minus_after_digits_is_ignored() {
             // Minus sign only counts if before any digits
             assert_eq!(parse_dbm("45-67"), Some(4567));
+        }
+    }
+
+    mod format_compact_title_tests {
+        use super::*;
+
+        #[test]
+        fn formats_p1s_with_serial_suffix() {
+            let result = format_compact_title("Bambu Lab P1S", "6789");
+            assert_eq!(result, "P1S ...6789");
+        }
+
+        #[test]
+        fn formats_x1c_with_serial_suffix() {
+            let result = format_compact_title("Bambu Lab X1C", "0428");
+            assert_eq!(result, "X1C ...0428");
+        }
+
+        #[test]
+        fn formats_a1_mini_with_serial_suffix() {
+            let result = format_compact_title("Bambu Lab A1 Mini", "1234");
+            assert_eq!(result, "A1 Mini ...1234");
+        }
+
+        #[test]
+        fn returns_model_only_without_serial() {
+            let result = format_compact_title("Bambu Lab P1S", "");
+            assert_eq!(result, "P1S");
+            assert!(matches!(result, Cow::Borrowed(_)));
+        }
+
+        #[test]
+        fn handles_unknown_model_with_serial() {
+            let result = format_compact_title("Bambu Printer", "5678");
+            assert_eq!(result, "Bambu Printer ...5678");
+        }
+
+        #[test]
+        fn handles_unknown_model_without_serial() {
+            let result = format_compact_title("Bambu Printer", "");
+            assert_eq!(result, "Bambu Printer");
+            assert!(matches!(result, Cow::Borrowed(_)));
+        }
+
+        #[test]
+        fn handles_empty_model_with_serial() {
+            let result = format_compact_title("", "9999");
+            assert_eq!(result, " ...9999");
+        }
+
+        #[test]
+        fn handles_empty_model_without_serial() {
+            let result = format_compact_title("", "");
+            assert_eq!(result, "");
+            assert!(matches!(result, Cow::Borrowed(_)));
+        }
+    }
+
+    mod extract_serial_suffix_tests {
+        use super::*;
+
+        #[test]
+        fn extracts_last_4_chars() {
+            assert_eq!(extract_serial_suffix("01P00A123456789"), "6789");
+        }
+
+        #[test]
+        fn extracts_from_exact_4_char_serial() {
+            assert_eq!(extract_serial_suffix("1234"), "1234");
+        }
+
+        #[test]
+        fn returns_empty_for_short_serial() {
+            assert_eq!(extract_serial_suffix("123"), "");
+            assert_eq!(extract_serial_suffix("12"), "");
+            assert_eq!(extract_serial_suffix("1"), "");
+        }
+
+        #[test]
+        fn returns_empty_for_empty_serial() {
+            assert_eq!(extract_serial_suffix(""), "");
+        }
+
+        #[test]
+        fn handles_serial_with_letters() {
+            assert_eq!(extract_serial_suffix("01P00AABCD"), "ABCD");
         }
     }
 }
