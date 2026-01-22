@@ -60,6 +60,13 @@ pub struct App {
     /// Connection status for each printer (parallel to printers vec)
     #[allow(dead_code)] // Will be used by multi-printer integration
     printer_connections: Vec<bool>,
+    /// Cached count of connected printers for O(1) access.
+    ///
+    /// This field is maintained incrementally by `set_printer_connected()` to avoid
+    /// O(n) iteration over `printer_connections` each time the count is needed.
+    /// The count is updated only when a connection state actually changes.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    connected_count: usize,
     /// Last update timestamp for each printer (parallel to printers vec)
     #[allow(dead_code)] // Will be used by multi-printer integration
     printer_last_updates: Vec<Option<Instant>>,
@@ -106,6 +113,7 @@ impl App {
             connected: false,
             printers,
             printer_connections,
+            connected_count: 0,
             printer_last_updates,
             active_printer_index: 0,
             last_update: None,
@@ -138,6 +146,7 @@ impl App {
             connected: false,
             printers,
             printer_connections,
+            connected_count: 0,
             printer_last_updates,
             active_printer_index: 0,
             last_update: None,
@@ -171,9 +180,12 @@ impl App {
     }
 
     /// Returns the number of printers that are currently connected.
+    ///
+    /// This returns a cached count maintained by `set_printer_connected()`,
+    /// providing O(1) access instead of O(n) iteration over printer connections.
     #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn get_connected_count(&self) -> usize {
-        self.printer_connections.iter().filter(|&&c| c).count()
+        self.connected_count
     }
 
     /// Returns the total number of printers.
@@ -220,11 +232,25 @@ impl App {
 
     /// Updates the connection status for a specific printer.
     ///
+    /// Maintains the cached `connected_count` incrementally:
+    /// - Increments when changing from disconnected to connected
+    /// - Decrements when changing from connected to disconnected
+    /// - No change if the state is already the target value
+    ///
     /// Also updates the legacy `connected` field if this is the active printer.
     #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn set_printer_connected(&mut self, index: usize, connected: bool) {
         if let Some(conn) = self.printer_connections.get_mut(index) {
-            *conn = connected;
+            let was_connected = *conn;
+            if was_connected != connected {
+                *conn = connected;
+                // Update cached count based on state transition
+                if connected {
+                    self.connected_count += 1;
+                } else {
+                    self.connected_count = self.connected_count.saturating_sub(1);
+                }
+            }
             // Update legacy field if this is the active printer
             if index == self.active_printer_index {
                 self.connected = connected;
