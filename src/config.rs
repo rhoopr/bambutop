@@ -6,6 +6,22 @@
 //! Supports two formats:
 //! - **New format (multi-printer)**: Uses `[[printers]]` array for multiple printers
 //! - **Legacy format**: Uses single `[printer]` section (automatically migrated on save)
+//!
+//! # Printer Ordering Guarantee
+//!
+//! Printers maintain a **deterministic order** across application restarts:
+//!
+//! - The order in which printers appear in the config file is preserved when loading
+//! - The first printer in the `[[printers]]` array becomes the primary printer
+//! - Additional printers follow in the same order they appear in the file
+//! - When saving, printers are written in the same order: primary first, then extras
+//!
+//! This guarantee is provided by:
+//! 1. TOML specification requires arrays to preserve element order
+//! 2. The `toml` crate correctly implements ordered array parsing/serialization
+//! 3. Internal data structures (`Vec`) maintain insertion order
+//!
+//! Users can rely on this ordering for consistent UI presentation across restarts.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -23,6 +39,15 @@ pub const DEFAULT_MQTT_PORT: u16 = 8883;
 /// The `printer` field is maintained for backwards compatibility with existing code
 /// that constructs and accesses configs using `config.printer`. New code should use
 /// `config.all_printers()` to access all configured printers.
+///
+/// # Ordering Guarantee
+///
+/// Printers are returned in a deterministic order that is preserved across restarts:
+/// 1. The primary `printer` field (first printer from config file)
+/// 2. The `extra_printers` in the order they appear in the config file
+///
+/// This order matches the order in which printers appear in the `[[printers]]` array
+/// in the TOML config file.
 ///
 /// When constructing with struct literal syntax, the `extra_printers` field can be
 /// omitted by using `..Default::default()`:
@@ -194,10 +219,19 @@ impl Config {
         Ok(home.join(".config").join("bambutop").join("config.toml"))
     }
 
-    /// Returns all configured printers as a Vec.
+    /// Returns all configured printers as a Vec in deterministic order.
     ///
     /// This combines the primary `printer` field with any `extra_printers`.
     /// This is the preferred way to access all printer configurations.
+    ///
+    /// # Ordering
+    ///
+    /// Printers are returned in a stable, deterministic order:
+    /// 1. The primary printer (index 0)
+    /// 2. Extra printers in the order they were added/loaded (indices 1, 2, ...)
+    ///
+    /// This order matches the `[[printers]]` array order in the config file and
+    /// is preserved across application restarts.
     pub fn all_printers(&self) -> Vec<PrinterConfig> {
         let mut all = Vec::with_capacity(1 + self.extra_printers.len());
         all.push(self.printer.clone());
@@ -615,5 +649,79 @@ access_code = "3"
         assert_eq!(all[2].serial, "C");
 
         assert_eq!(config.extra_printers().len(), 2);
+    }
+
+    /// Verifies that printer ordering is preserved through a full round-trip:
+    /// parse -> serialize -> reparse. This ensures deterministic ordering across
+    /// application restarts.
+    #[test]
+    fn test_printer_ordering_preserved_through_roundtrip() {
+        // Start with a specific order
+        let original_content = r#"
+[[printers]]
+name = "First Printer"
+ip = "192.168.1.1"
+serial = "FIRST"
+access_code = "111"
+
+[[printers]]
+name = "Second Printer"
+ip = "192.168.1.2"
+serial = "SECOND"
+access_code = "222"
+
+[[printers]]
+name = "Third Printer"
+ip = "192.168.1.3"
+serial = "THIRD"
+access_code = "333"
+
+[[printers]]
+name = "Fourth Printer"
+ip = "192.168.1.4"
+serial = "FOURTH"
+access_code = "444"
+"#;
+
+        // Parse the original config
+        let config = Config::parse(original_content).expect("Failed to parse original");
+
+        // Verify initial ordering
+        let printers = config.all_printers();
+        assert_eq!(printers.len(), 4);
+        assert_eq!(printers[0].serial, "FIRST");
+        assert_eq!(printers[1].serial, "SECOND");
+        assert_eq!(printers[2].serial, "THIRD");
+        assert_eq!(printers[3].serial, "FOURTH");
+
+        // Serialize to new format (simulating a save)
+        let save_config = SaveConfig {
+            printers: config.all_printers(),
+        };
+        let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
+
+        // Parse the serialized content (simulating a restart/reload)
+        let reloaded = Config::parse(&serialized).expect("Failed to reparse");
+
+        // Verify ordering is preserved after round-trip
+        let reloaded_printers = reloaded.all_printers();
+        assert_eq!(reloaded_printers.len(), 4);
+        assert_eq!(reloaded_printers[0].serial, "FIRST");
+        assert_eq!(reloaded_printers[0].name.as_deref(), Some("First Printer"));
+        assert_eq!(reloaded_printers[1].serial, "SECOND");
+        assert_eq!(reloaded_printers[1].name.as_deref(), Some("Second Printer"));
+        assert_eq!(reloaded_printers[2].serial, "THIRD");
+        assert_eq!(reloaded_printers[2].name.as_deref(), Some("Third Printer"));
+        assert_eq!(reloaded_printers[3].serial, "FOURTH");
+        assert_eq!(reloaded_printers[3].name.as_deref(), Some("Fourth Printer"));
+
+        // Verify primary printer is correct
+        assert_eq!(reloaded.printer.serial, "FIRST");
+
+        // Verify extra_printers order
+        assert_eq!(reloaded.extra_printers().len(), 3);
+        assert_eq!(reloaded.extra_printers()[0].serial, "SECOND");
+        assert_eq!(reloaded.extra_printers()[1].serial, "THIRD");
+        assert_eq!(reloaded.extra_printers()[2].serial, "FOURTH");
     }
 }
