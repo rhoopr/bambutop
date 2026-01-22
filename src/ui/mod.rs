@@ -7,6 +7,7 @@
 pub mod aggregate;
 mod controls;
 mod header;
+mod help;
 mod progress;
 mod status;
 mod temps;
@@ -102,6 +103,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     );
 
     render_help_bar(frame, app, chunks[5]);
+
+    // Render help overlay on top if visible
+    if app.show_help {
+        help::render(frame, content_area);
+    }
 }
 
 /// Application version from Cargo.toml

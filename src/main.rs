@@ -190,7 +190,17 @@ async fn run_app(
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+                    // If help overlay is shown, any key closes it
+                    if app.show_help {
+                        app.show_help = false;
+                        continue;
+                    }
+
                     match key.code {
+                        // Help overlay toggle
+                        KeyCode::Char('?') | KeyCode::Char('h') => {
+                            app.show_help = true;
+                        }
                         KeyCode::Char('q') => {
                             app.should_quit = true;
                         }
