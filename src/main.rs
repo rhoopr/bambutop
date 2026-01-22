@@ -138,6 +138,9 @@ async fn main() -> Result<()> {
     )
     .await;
 
+    // Gracefully disconnect from MQTT broker
+    mqtt_client.disconnect().await;
+
     // Restore terminal
     TERMINAL_IN_RAW_MODE.store(false, Ordering::SeqCst);
     disable_raw_mode()?;

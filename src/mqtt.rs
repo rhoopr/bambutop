@@ -379,6 +379,16 @@ impl MqttClient {
 
         Ok(())
     }
+
+    /// Sends a disconnect message to the MQTT broker.
+    ///
+    /// This should be called before dropping the client for a clean shutdown.
+    /// If the disconnect fails or times out, it is logged but not treated as an error
+    /// since we're shutting down anyway.
+    pub async fn disconnect(&self) {
+        // Try to disconnect gracefully with a short timeout
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.client.disconnect()).await;
+    }
 }
 
 impl Drop for MqttClient {
