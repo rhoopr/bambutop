@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const TOAST_DURATION: Duration = Duration::from_secs(3);
 
 /// Duration after which a connection is considered stale if no messages received
+#[allow(dead_code)] // Used by is_connection_stale() for future stale connection detection
 const STALE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
 
 /// Maximum number of toasts to display at once
@@ -379,7 +380,7 @@ impl App {
                 self.last_update = Some(Instant::now());
                 self.set_printer_last_update(printer_index, Some(Instant::now()));
             }
-            MqttEvent::Error { message, .. } => {
+            MqttEvent::Error { message } => {
                 self.error_message = Some(message);
             }
         }
@@ -393,6 +394,7 @@ impl App {
     /// Returns true if the connection appears stale (connected but no recent messages).
     /// A connection is considered stale if we're marked as connected but haven't
     /// received any messages for STALE_CONNECTION_THRESHOLD duration.
+    #[allow(dead_code)] // Provided for future stale connection detection
     pub fn is_connection_stale(&self) -> bool {
         if !self.connected {
             return false;
