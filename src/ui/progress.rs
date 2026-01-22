@@ -44,7 +44,7 @@ pub fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Job name
-            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Phase (or spacer if no phase)
             Constraint::Length(1), // Progress/Layer/Remaining
             Constraint::Length(1), // Progress bar
             Constraint::Length(1), // Spacer
@@ -70,6 +70,16 @@ pub fn render(
         ),
     ]);
     frame.render_widget(Paragraph::new(file_line), chunks[0]);
+
+    // Print phase (only shown when job is active)
+    if let Some(phase) = print_status.print_phase(&printer_state.temperatures) {
+        let phase_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Phase: ", Style::new().fg(Color::DarkGray)),
+            Span::styled(phase, Style::new().fg(Color::Gray)),
+        ]);
+        frame.render_widget(Paragraph::new(phase_line), chunks[1]);
+    }
 
     // Progress, Layer and time remaining
     let time_remaining = format_time(print_status.remaining_time_mins);
