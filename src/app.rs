@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 /// How long toasts are displayed before auto-dismissing
 const TOAST_DURATION: Duration = Duration::from_secs(3);
 
+/// Duration after which a connection is considered stale if no messages received
+const STALE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
+
 /// Maximum number of toasts to display at once
 const MAX_TOASTS: usize = 3;
 
@@ -113,6 +116,19 @@ impl App {
         self.last_update.map(|t| t.elapsed())
     }
 
+    /// Returns true if the connection appears stale (connected but no recent messages).
+    /// A connection is considered stale if we're marked as connected but haven't
+    /// received any messages for STALE_CONNECTION_THRESHOLD duration.
+    pub fn is_connection_stale(&self) -> bool {
+        if !self.connected {
+            return false;
+        }
+        match self.last_update {
+            Some(t) => t.elapsed() > STALE_CONNECTION_THRESHOLD,
+            None => true, // Connected but never received data
+        }
+    }
+
     /// Returns a human-readable status text based on connection and print state.
     ///
     /// Maps the printer's gcode_state to user-friendly labels.
@@ -185,5 +201,67 @@ impl App {
     pub fn expire_toasts(&mut self) {
         self.toasts
             .retain(|toast| toast.created_at.elapsed() < TOAST_DURATION);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn create_test_app() -> App {
+        let printer_state = Arc::new(Mutex::new(PrinterState::default()));
+        App::new(printer_state)
+    }
+
+    mod is_connection_stale_tests {
+        use super::*;
+
+        #[test]
+        fn returns_false_when_disconnected() {
+            let app = create_test_app();
+            // App starts disconnected
+            assert!(!app.is_connection_stale());
+        }
+
+        #[test]
+        fn returns_true_when_connected_but_never_received_data() {
+            let mut app = create_test_app();
+            app.connected = true;
+            app.last_update = None;
+            assert!(app.is_connection_stale());
+        }
+
+        #[test]
+        fn returns_false_when_connected_with_recent_update() {
+            let mut app = create_test_app();
+            app.connected = true;
+            app.last_update = Some(Instant::now());
+            assert!(!app.is_connection_stale());
+        }
+
+        #[test]
+        fn returns_true_when_connected_with_old_update() {
+            let mut app = create_test_app();
+            app.connected = true;
+            // Set last_update to a time older than the threshold
+            app.last_update =
+                Some(Instant::now() - STALE_CONNECTION_THRESHOLD - Duration::from_secs(1));
+            assert!(app.is_connection_stale());
+        }
+
+        #[test]
+        fn returns_false_when_update_exactly_at_threshold() {
+            let mut app = create_test_app();
+            app.connected = true;
+            // Set last_update to exactly the threshold (not stale yet)
+            app.last_update = Some(Instant::now() - STALE_CONNECTION_THRESHOLD);
+            // Since we check elapsed() > threshold (not >=), this should not be stale
+            // However, due to timing, a tiny amount of time may have passed
+            // So we test with a small buffer
+            app.last_update =
+                Some(Instant::now() - STALE_CONNECTION_THRESHOLD + Duration::from_millis(100));
+            assert!(!app.is_connection_stale());
+        }
     }
 }

@@ -37,6 +37,7 @@ pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: 
 
 fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     let status = app.status_text();
+    let is_stale = app.is_connection_stale();
     let status_color = match status {
         "Printing" => Color::Green,
         "Paused" => Color::Yellow,
@@ -59,7 +60,7 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let status_line = Line::from(vec![
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled(
             format!(" {} ", status),
@@ -68,8 +69,17 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
                 .bg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
-    ]);
+    ];
 
+    if is_stale {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            "\u{26A0} Stale",
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+
+    let status_line = Line::from(spans);
     frame.render_widget(Paragraph::new(status_line), inner);
 }
 
