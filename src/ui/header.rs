@@ -3,6 +3,10 @@
 //! Displays the printer model, connection status, HMS errors, and WiFi signal
 //! strength with visual indicators and color coding.
 
+use super::common::{
+    extract_serial_suffix, format_compact_title, parse_dbm, WIFI_DEFAULT_DBM,
+    WIFI_MEDIUM_THRESHOLD, WIFI_STRONG_THRESHOLD,
+};
 use crate::app::App;
 use crate::printer::PrinterState;
 use ratatui::{
@@ -13,68 +17,7 @@ use ratatui::{
     Frame,
 };
 use smallvec::SmallVec;
-use std::borrow::Cow;
 use std::time::Instant;
-
-/// WiFi signal threshold for strong signal (dBm)
-const WIFI_STRONG_THRESHOLD: i32 = -50;
-
-/// WiFi signal threshold for medium signal (dBm)
-const WIFI_MEDIUM_THRESHOLD: i32 = -70;
-
-/// Default dBm value when signal cannot be parsed
-const WIFI_DEFAULT_DBM: i32 = -100;
-
-/// Number of serial number digits to show in compact title
-const SERIAL_SUFFIX_LENGTH: usize = 4;
-
-/// Prefix used in full printer model names from Bambu
-const MODEL_PREFIX: &str = "Bambu Lab ";
-
-/// Formats a compact printer title from model name and optional serial suffix.
-///
-/// Extracts the short model name (e.g., "P1S" from "Bambu Lab P1S") and appends
-/// the last 4 digits of the serial number for identification.
-///
-/// # Examples
-///
-/// - With serial: "Bambu Lab P1S" + "01P00A123456789" -> "P1S ...6789"
-/// - Without serial: "Bambu Lab P1S" + "" -> "P1S"
-/// - Unknown model: "Bambu Printer" + "ABC123450428" -> "Bambu Printer ...0428"
-///
-/// Returns `Cow::Borrowed` when possible to avoid allocations.
-fn format_compact_title<'a>(printer_model: &'a str, serial_suffix: &str) -> Cow<'a, str> {
-    // Extract short model name by removing "Bambu Lab " prefix
-    let short_model = printer_model
-        .strip_prefix(MODEL_PREFIX)
-        .unwrap_or(printer_model);
-
-    if serial_suffix.is_empty() {
-        // No serial suffix available, return just the model name
-        if short_model.len() == printer_model.len() {
-            // No prefix was stripped, return borrowed reference
-            Cow::Borrowed(printer_model)
-        } else {
-            // Prefix was stripped, need to return the slice
-            Cow::Borrowed(short_model)
-        }
-    } else {
-        // Format with serial suffix
-        Cow::Owned(format!("{} ...{}", short_model, serial_suffix))
-    }
-}
-
-/// Extracts the last N characters from a serial number for display.
-///
-/// Returns an empty string if the serial is too short or empty.
-fn extract_serial_suffix(serial: &str) -> &str {
-    let len = serial.len();
-    if len >= SERIAL_SUFFIX_LENGTH {
-        &serial[len - SERIAL_SUFFIX_LENGTH..]
-    } else {
-        ""
-    }
-}
 
 /// Renders the header panel with printer status and system info boxes.
 pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
@@ -98,15 +41,21 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         _ => Color::White,
     };
 
-    // Format compact printer title with model and serial suffix
-    let model = if printer_state.printer_model.is_empty() {
-        "Bambu Printer"
+    // Format printer title: config name > "P1S ...0428" > "Bambu Printer"
+    let title = if !printer_state.printer_name.is_empty() {
+        // Use config name
+        format!(" {} ", printer_state.printer_name)
     } else {
-        &printer_state.printer_model
+        // Use "P1S ...0428" format or fallback
+        let model = if printer_state.printer_model.is_empty() {
+            "Bambu Printer"
+        } else {
+            &printer_state.printer_model
+        };
+        let serial_suffix = extract_serial_suffix(&printer_state.serial_suffix);
+        let compact_title = format_compact_title(model, serial_suffix);
+        format!(" {} ", compact_title)
     };
-    let serial_suffix = extract_serial_suffix(&printer_state.serial_suffix);
-    let compact_title = format_compact_title(model, serial_suffix);
-    let title = format!(" {} ", compact_title);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(status_color))
@@ -249,30 +198,6 @@ fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
     ]
 }
 
-/// Parses dBm value from a string like "-45dBm" or "-45" without allocation.
-fn parse_dbm(s: &str) -> Option<i32> {
-    let mut result: i32 = 0;
-    let mut negative = false;
-    let mut found_digit = false;
-
-    for c in s.chars() {
-        if c == '-' && !found_digit {
-            negative = true;
-        } else if c.is_ascii_digit() {
-            found_digit = true;
-            result = result
-                .saturating_mul(10)
-                .saturating_add((c as i32) - ('0' as i32));
-        }
-    }
-
-    if found_digit {
-        Some(if negative { -result } else { result })
-    } else {
-        None
-    }
-}
-
 /// Formats a relative time string from an Instant.
 ///
 /// Returns human-readable strings like "2m ago", "1h ago", "3d ago".
@@ -289,164 +214,5 @@ fn format_relative_time(instant: Instant) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    mod parse_dbm_tests {
-        use super::*;
-
-        #[test]
-        fn parses_negative_with_suffix() {
-            assert_eq!(parse_dbm("-45dBm"), Some(-45));
-            assert_eq!(parse_dbm("-70dBm"), Some(-70));
-        }
-
-        #[test]
-        fn parses_negative_without_suffix() {
-            assert_eq!(parse_dbm("-45"), Some(-45));
-            assert_eq!(parse_dbm("-100"), Some(-100));
-        }
-
-        #[test]
-        fn parses_positive_values() {
-            assert_eq!(parse_dbm("45"), Some(45));
-            assert_eq!(parse_dbm("0"), Some(0));
-        }
-
-        #[test]
-        fn returns_none_for_empty() {
-            assert_eq!(parse_dbm(""), None);
-        }
-
-        #[test]
-        fn returns_none_for_no_digits() {
-            assert_eq!(parse_dbm("dBm"), None);
-            assert_eq!(parse_dbm("-"), None);
-            assert_eq!(parse_dbm("abc"), None);
-        }
-
-        #[test]
-        fn handles_whitespace_in_value() {
-            // Digits are extracted regardless of surrounding text
-            assert_eq!(parse_dbm("Signal: -45 dBm"), Some(-45));
-        }
-
-        #[test]
-        fn saturates_on_overflow() {
-            // Very large numbers saturate instead of overflowing
-            let result = parse_dbm("99999999999999999999");
-            assert!(result.is_some());
-            // Should be saturated to i32::MAX
-            assert_eq!(result, Some(i32::MAX));
-        }
-
-        #[test]
-        fn handles_multiple_minus_signs() {
-            // Only the first minus before digits is used
-            assert_eq!(parse_dbm("--45"), Some(-45));
-        }
-
-        #[test]
-        fn concatenates_all_digit_sequences() {
-            // Documents behavior: all digits in the string are concatenated
-            // This matches the actual implementation behavior
-            assert_eq!(parse_dbm("-45abc67"), Some(-4567));
-        }
-
-        #[test]
-        fn minus_after_digits_is_ignored() {
-            // Minus sign only counts if before any digits
-            assert_eq!(parse_dbm("45-67"), Some(4567));
-        }
-    }
-
-    mod format_compact_title_tests {
-        use super::*;
-
-        #[test]
-        fn formats_p1s_with_serial_suffix() {
-            let result = format_compact_title("Bambu Lab P1S", "6789");
-            assert_eq!(result, "P1S ...6789");
-        }
-
-        #[test]
-        fn formats_x1c_with_serial_suffix() {
-            let result = format_compact_title("Bambu Lab X1C", "0428");
-            assert_eq!(result, "X1C ...0428");
-        }
-
-        #[test]
-        fn formats_a1_mini_with_serial_suffix() {
-            let result = format_compact_title("Bambu Lab A1 Mini", "1234");
-            assert_eq!(result, "A1 Mini ...1234");
-        }
-
-        #[test]
-        fn returns_model_only_without_serial() {
-            let result = format_compact_title("Bambu Lab P1S", "");
-            assert_eq!(result, "P1S");
-            assert!(matches!(result, Cow::Borrowed(_)));
-        }
-
-        #[test]
-        fn handles_unknown_model_with_serial() {
-            let result = format_compact_title("Bambu Printer", "5678");
-            assert_eq!(result, "Bambu Printer ...5678");
-        }
-
-        #[test]
-        fn handles_unknown_model_without_serial() {
-            let result = format_compact_title("Bambu Printer", "");
-            assert_eq!(result, "Bambu Printer");
-            assert!(matches!(result, Cow::Borrowed(_)));
-        }
-
-        #[test]
-        fn handles_empty_model_with_serial() {
-            let result = format_compact_title("", "9999");
-            assert_eq!(result, " ...9999");
-        }
-
-        #[test]
-        fn handles_empty_model_without_serial() {
-            let result = format_compact_title("", "");
-            assert_eq!(result, "");
-            assert!(matches!(result, Cow::Borrowed(_)));
-        }
-    }
-
-    mod extract_serial_suffix_tests {
-        use super::*;
-
-        #[test]
-        fn extracts_last_4_chars() {
-            assert_eq!(extract_serial_suffix("01P00A123456789"), "6789");
-        }
-
-        #[test]
-        fn extracts_from_exact_4_char_serial() {
-            assert_eq!(extract_serial_suffix("1234"), "1234");
-        }
-
-        #[test]
-        fn returns_empty_for_short_serial() {
-            assert_eq!(extract_serial_suffix("123"), "");
-            assert_eq!(extract_serial_suffix("12"), "");
-            assert_eq!(extract_serial_suffix("1"), "");
-        }
-
-        #[test]
-        fn returns_empty_for_empty_serial() {
-            assert_eq!(extract_serial_suffix(""), "");
-        }
-
-        #[test]
-        fn handles_serial_with_letters() {
-            assert_eq!(extract_serial_suffix("01P00AABCD"), "ABCD");
-        }
     }
 }

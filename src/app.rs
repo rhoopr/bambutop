@@ -20,6 +20,16 @@ const STALE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
 /// Maximum number of toasts to display at once
 const MAX_TOASTS: usize = 3;
 
+/// View mode for the UI - single printer detail or aggregate overview
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Show all printers in a grid overview (default when multiple printers)
+    #[default]
+    Aggregate,
+    /// Show detailed view of a single selected printer
+    Single,
+}
+
 /// Severity level for toast notifications, determines color
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastSeverity {
@@ -69,8 +79,9 @@ pub struct App {
     #[allow(dead_code)] // Will be used by multi-printer integration
     connected_count: usize,
     /// Last update timestamp for each printer (parallel to printers vec)
-    #[allow(dead_code)] // Will be used by multi-printer integration
     printer_last_updates: Vec<Option<Instant>>,
+    /// Error messages for each printer (parallel to printers vec)
+    printer_error_messages: Vec<Option<String>>,
     /// Index of the currently active/selected printer
     #[allow(dead_code)] // Will be used by multi-printer integration
     active_printer_index: usize,
@@ -98,6 +109,8 @@ pub struct App {
     timezone_offset_secs: i32,
     /// Whether to show the help overlay
     pub show_help: bool,
+    /// Current view mode (aggregate or single printer)
+    pub view_mode: ViewMode,
 }
 
 impl App {
@@ -105,11 +118,13 @@ impl App {
     ///
     /// Computes and caches the local timezone offset at startup.
     /// For backward compatibility, initializes multi-printer support with the single printer.
+    #[allow(dead_code)] // Kept for backwards compatibility with single-printer usage
     pub fn new(printer_state: SharedPrinterState) -> Self {
         // Initialize with single printer for backward compatibility
         let printers = vec![Arc::clone(&printer_state)];
         let printer_connections = vec![false];
         let printer_last_updates = vec![None];
+        let printer_error_messages = vec![None];
 
         Self {
             printer_state,
@@ -118,6 +133,7 @@ impl App {
             printer_connections,
             connected_count: 0,
             printer_last_updates,
+            printer_error_messages,
             active_printer_index: 0,
             last_update: None,
             error_message: None,
@@ -129,6 +145,7 @@ impl App {
             toasts: VecDeque::new(),
             timezone_offset_secs: Self::compute_timezone_offset(),
             show_help: false,
+            view_mode: ViewMode::Single, // Single printer = single view
         }
     }
 
@@ -136,7 +153,6 @@ impl App {
     ///
     /// The first printer in the list becomes the active printer.
     /// Panics if the printers vector is empty.
-    #[allow(dead_code)] // Will be used by multi-printer integration in main.rs
     pub fn new_multi(printers: Vec<SharedPrinterState>) -> Self {
         assert!(!printers.is_empty(), "At least one printer is required");
 
@@ -144,6 +160,14 @@ impl App {
         let printer_state = Arc::clone(&printers[0]);
         let printer_connections = vec![false; printer_count];
         let printer_last_updates = vec![None; printer_count];
+        let printer_error_messages = vec![None; printer_count];
+
+        // Use aggregate view when multiple printers, single view otherwise
+        let view_mode = if printer_count > 1 {
+            ViewMode::Aggregate
+        } else {
+            ViewMode::Single
+        };
 
         Self {
             printer_state,
@@ -152,6 +176,7 @@ impl App {
             printer_connections,
             connected_count: 0,
             printer_last_updates,
+            printer_error_messages,
             active_printer_index: 0,
             last_update: None,
             error_message: None,
@@ -163,6 +188,7 @@ impl App {
             toasts: VecDeque::new(),
             timezone_offset_secs: Self::compute_timezone_offset(),
             show_help: false,
+            view_mode,
         }
     }
 
@@ -173,13 +199,13 @@ impl App {
     // ========================================================================
 
     /// Returns the currently active printer state, if any printers exist.
-    #[allow(dead_code)] // Will be used by multi-printer integration
+    #[allow(dead_code)]
     pub fn get_active_printer(&self) -> Option<&SharedPrinterState> {
         self.printers.get(self.active_printer_index)
     }
 
     /// Returns the printer state at the given index, if it exists.
-    #[allow(dead_code)] // Will be used by multi-printer integration
+    #[allow(dead_code)]
     pub fn get_printer(&self, index: usize) -> Option<&SharedPrinterState> {
         self.printers.get(index)
     }
@@ -188,28 +214,35 @@ impl App {
     ///
     /// This returns a cached count maintained by `set_printer_connected()`,
     /// providing O(1) access instead of O(n) iteration over printer connections.
-    #[allow(dead_code)] // Will be used by multi-printer integration
+    #[allow(dead_code)]
     pub fn get_connected_count(&self) -> usize {
         self.connected_count
     }
 
     /// Returns the total number of printers.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn printer_count(&self) -> usize {
         self.printers.len()
     }
 
     /// Returns the index of the currently active printer.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn active_printer_index(&self) -> usize {
         self.active_printer_index
+    }
+
+    /// Returns snapshots of all printer states for rendering.
+    ///
+    /// This clones each state to avoid holding locks during rendering.
+    pub fn all_printer_snapshots(&self) -> Vec<crate::printer::PrinterState> {
+        self.printers
+            .iter()
+            .map(|p| p.lock().expect("state lock poisoned").clone())
+            .collect()
     }
 
     /// Sets the active printer to the given index.
     ///
     /// Returns true if the index was valid and the active printer was changed,
     /// false if the index was out of bounds.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn set_active_printer(&mut self, index: usize) -> bool {
         if index < self.printers.len() {
             self.active_printer_index = index;
@@ -217,6 +250,8 @@ impl App {
             self.printer_state = Arc::clone(&self.printers[index]);
             self.connected = self.printer_connections[index];
             self.last_update = self.printer_last_updates[index];
+            self.error_message
+                .clone_from(&self.printer_error_messages[index]);
             true
         } else {
             false
@@ -232,6 +267,7 @@ impl App {
         self.printers.push(printer_state);
         self.printer_connections.push(false);
         self.printer_last_updates.push(None);
+        self.printer_error_messages.push(None);
         index
     }
 
@@ -278,7 +314,6 @@ impl App {
     }
 
     /// Returns the connection status for a specific printer.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn is_printer_connected(&self, index: usize) -> bool {
         self.printer_connections
             .get(index)
@@ -287,7 +322,7 @@ impl App {
     }
 
     /// Returns the last update timestamp for a specific printer.
-    #[allow(dead_code)] // Will be used by multi-printer integration
+    /// Returns the last update timestamp for a specific printer.
     pub fn get_printer_last_update(&self, index: usize) -> Option<Instant> {
         self.printer_last_updates.get(index).copied().flatten()
     }
@@ -365,23 +400,37 @@ impl App {
     pub fn handle_mqtt_event(&mut self, event: MqttEvent) {
         match event {
             MqttEvent::Connected { printer_index } => {
-                self.connected = true;
-                self.error_message = None;
-                // Update multi-printer state if available
+                // Clear error for this printer
+                self.set_printer_error(printer_index, None);
+                // Update multi-printer state
                 self.set_printer_connected(printer_index, true);
             }
             MqttEvent::Disconnected { printer_index } => {
-                self.connected = false;
                 self.set_printer_connected(printer_index, false);
             }
             MqttEvent::StateUpdated { printer_index } => {
                 // State is updated via shared reference, just record the time
-                self.connected = true;
-                self.last_update = Some(Instant::now());
                 self.set_printer_last_update(printer_index, Some(Instant::now()));
+                self.set_printer_connected(printer_index, true);
             }
-            MqttEvent::Error { message } => {
-                self.error_message = Some(message);
+            MqttEvent::Error {
+                printer_index,
+                message,
+            } => {
+                self.set_printer_error(printer_index, Some(message));
+            }
+        }
+    }
+
+    /// Sets the error message for a specific printer.
+    ///
+    /// Also updates the legacy `error_message` field if this is the active printer.
+    fn set_printer_error(&mut self, index: usize, error: Option<String>) {
+        if let Some(err_slot) = self.printer_error_messages.get_mut(index) {
+            *err_slot = error.clone();
+            // Update legacy field if this is the active printer
+            if index == self.active_printer_index {
+                self.error_message = error;
             }
         }
     }
@@ -416,16 +465,7 @@ impl App {
         }
 
         let state = self.printer_state.lock().expect("state lock poisoned");
-        match state.print_status.gcode_state.as_str() {
-            "IDLE" => "Idle",
-            "PREPARE" => "Preparing",
-            "RUNNING" => "Printing",
-            "PAUSE" => "Paused",
-            "FINISH" => "Finished",
-            "FAILED" => "Failed",
-            "" => "Connecting...",
-            _ => "Unknown",
-        }
+        crate::ui::common::gcode_state_to_status(&state.print_status.gcode_state)
     }
 
     /// Returns a snapshot of the printer state for rendering.

@@ -6,7 +6,7 @@ mod ui;
 mod wizard;
 
 use anyhow::Result;
-use app::App;
+use app::{App, ViewMode};
 use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -123,15 +123,34 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Connect to printer (returns shared state for zero-copy updates)
-    let (mqtt_client, printer_state, mut mqtt_rx) =
-        MqttClient::connect(config.printer.clone()).await?;
+    // Get all configured printers
+    let all_printers = config.all_printers();
+    let printer_count = all_printers.len();
 
-    // Create app with shared printer state
-    let mut app = App::new(printer_state);
+    // Create shared event channel for all printers
+    let (event_tx, mut mqtt_rx) = tokio::sync::mpsc::channel(100 * printer_count);
 
-    // Request initial state
-    mqtt_client.request_full_status().await?;
+    // Connect to all printers
+    let mut mqtt_clients = Vec::with_capacity(printer_count);
+    let mut printer_states = Vec::with_capacity(printer_count);
+
+    for (index, printer_config) in all_printers.into_iter().enumerate() {
+        let (client, state, _) =
+            MqttClient::connect(printer_config, index, Some(event_tx.clone())).await?;
+        mqtt_clients.push(client);
+        printer_states.push(state);
+    }
+
+    // Drop the original sender so the channel closes when all clients disconnect
+    drop(event_tx);
+
+    // Create app with all printer states
+    let mut app = App::new_multi(printer_states);
+
+    // Request initial state from all printers
+    for client in &mqtt_clients {
+        client.request_full_status().await?;
+    }
 
     // Main loop
     let result = run_app(
@@ -139,12 +158,14 @@ async fn main() -> Result<()> {
         &mut app,
         &mut mqtt_rx,
         UI_TICK_RATE,
-        &mqtt_client,
+        &mqtt_clients,
     )
     .await;
 
-    // Gracefully disconnect from MQTT broker
-    mqtt_client.disconnect().await;
+    // Gracefully disconnect from all MQTT brokers
+    for client in &mqtt_clients {
+        client.disconnect().await;
+    }
 
     // Restore terminal
     TERMINAL_IN_RAW_MODE.store(false, Ordering::SeqCst);
@@ -173,7 +194,7 @@ async fn run_app(
     app: &mut App,
     mqtt_rx: &mut tokio::sync::mpsc::Receiver<mqtt::MqttEvent>,
     tick_rate: Duration,
-    mqtt_client: &MqttClient,
+    mqtt_clients: &[MqttClient],
 ) -> Result<()> {
     loop {
         // Expire old toasts before rendering
@@ -249,7 +270,8 @@ async fn run_app(
                                         speed_level_to_name(new_level),
                                         speed_level_to_percent(new_level)
                                     );
-                                    if let Err(e) = mqtt_client.set_speed_level(new_level).await {
+                                    let client = &mqtt_clients[app.active_printer_index()];
+                                    if let Err(e) = client.set_speed_level(new_level).await {
                                         app.toast_error(format!("Speed change failed: {}", e));
                                     } else {
                                         app.toast_success(format!("Speed: {}", speed_display));
@@ -272,7 +294,8 @@ async fn run_app(
                                         speed_level_to_name(new_level),
                                         speed_level_to_percent(new_level)
                                     );
-                                    if let Err(e) = mqtt_client.set_speed_level(new_level).await {
+                                    let client = &mqtt_clients[app.active_printer_index()];
+                                    if let Err(e) = client.set_speed_level(new_level).await {
                                         app.toast_error(format!("Speed change failed: {}", e));
                                     } else {
                                         app.toast_success(format!("Speed: {}", speed_display));
@@ -290,7 +313,8 @@ async fn run_app(
                                     .chamber_light;
                                 let new_state = !current;
                                 let status = if new_state { "ON" } else { "OFF" };
-                                if let Err(e) = mqtt_client.set_chamber_light(new_state).await {
+                                let client = &mqtt_clients[app.active_printer_index()];
+                                if let Err(e) = client.set_chamber_light(new_state).await {
                                     app.toast_error(format!("Light toggle failed: {}", e));
                                 } else {
                                     app.toast_success(format!("Light: {}", status));
@@ -309,14 +333,15 @@ async fn run_app(
                                 if has_active_job {
                                     if app.pause_pending {
                                         // Second press - confirm pause/resume
+                                        let client = &mqtt_clients[app.active_printer_index()];
                                         if is_running {
-                                            match mqtt_client.pause_print().await {
+                                            match client.pause_print().await {
                                                 Ok(_) => app.toast_warning("Print paused"),
                                                 Err(e) => app
                                                     .toast_error(format!("Failed to pause: {}", e)),
                                             }
                                         } else if is_paused {
-                                            match mqtt_client.resume_print().await {
+                                            match client.resume_print().await {
                                                 Ok(_) => app.toast_success("Print resumed"),
                                                 Err(e) => app.toast_error(format!(
                                                     "Failed to resume: {}",
@@ -345,7 +370,8 @@ async fn run_app(
                                 if has_active_job {
                                     if app.cancel_pending {
                                         // Second press - confirm cancel
-                                        match mqtt_client.stop_print().await {
+                                        let client = &mqtt_clients[app.active_printer_index()];
+                                        match client.stop_print().await {
                                             Ok(_) => app.toast_error("Print cancelled"),
                                             Err(e) => {
                                                 app.toast_error(format!("Failed to cancel: {}", e))
@@ -361,28 +387,77 @@ async fn run_app(
                                 }
                             }
                         }
+                        // Return to aggregate view
+                        KeyCode::Char('a') => {
+                            if app.printer_count() > 1 && app.view_mode == ViewMode::Single {
+                                app.view_mode = ViewMode::Aggregate;
+                                app.toast_info("Overview");
+                            }
+                        }
                         // Multi-printer navigation: Tab cycles to next printer
                         KeyCode::Tab => {
                             let printer_count = app.printer_count();
                             if printer_count > 1 {
-                                let current = app.active_printer_index();
-                                let next = (current + 1) % printer_count;
-                                app.set_active_printer(next);
-                                app.toast_info(format!("Printer {}/{}", next + 1, printer_count));
+                                match app.view_mode {
+                                    ViewMode::Aggregate => {
+                                        // Switch to single view with first printer
+                                        app.view_mode = ViewMode::Single;
+                                        app.set_active_printer(0);
+                                        app.toast_info(format!("Printer {}/{}", 1, printer_count));
+                                    }
+                                    ViewMode::Single => {
+                                        let current = app.active_printer_index();
+                                        if current + 1 >= printer_count {
+                                            // At last printer, go back to aggregate
+                                            app.view_mode = ViewMode::Aggregate;
+                                            app.toast_info("Overview");
+                                        } else {
+                                            // Go to next printer
+                                            let next = current + 1;
+                                            app.set_active_printer(next);
+                                            app.toast_info(format!(
+                                                "Printer {}/{}",
+                                                next + 1,
+                                                printer_count
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                         }
                         // Multi-printer navigation: Shift+Tab cycles to previous printer
                         KeyCode::BackTab => {
                             let printer_count = app.printer_count();
                             if printer_count > 1 {
-                                let current = app.active_printer_index();
-                                let prev = if current == 0 {
-                                    printer_count - 1
-                                } else {
-                                    current - 1
-                                };
-                                app.set_active_printer(prev);
-                                app.toast_info(format!("Printer {}/{}", prev + 1, printer_count));
+                                match app.view_mode {
+                                    ViewMode::Aggregate => {
+                                        // Switch to single view with last printer
+                                        app.view_mode = ViewMode::Single;
+                                        let last = printer_count - 1;
+                                        app.set_active_printer(last);
+                                        app.toast_info(format!(
+                                            "Printer {}/{}",
+                                            printer_count, printer_count
+                                        ));
+                                    }
+                                    ViewMode::Single => {
+                                        let current = app.active_printer_index();
+                                        if current == 0 {
+                                            // At first printer, go back to aggregate
+                                            app.view_mode = ViewMode::Aggregate;
+                                            app.toast_info("Overview");
+                                        } else {
+                                            // Go to previous printer
+                                            let prev = current - 1;
+                                            app.set_active_printer(prev);
+                                            app.toast_info(format!(
+                                                "Printer {}/{}",
+                                                prev + 1,
+                                                printer_count
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                         }
                         // Multi-printer navigation: number keys 1-9 jump to printer by index
@@ -390,6 +465,7 @@ async fn run_app(
                             let index = (c as usize) - ('1' as usize);
                             let printer_count = app.printer_count();
                             if index < printer_count && index < MAX_PRINTER_HOTKEYS {
+                                app.view_mode = ViewMode::Single;
                                 app.set_active_printer(index);
                                 app.toast_info(format!("Printer {}/{}", index + 1, printer_count));
                             }

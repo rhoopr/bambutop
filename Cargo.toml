@@ -1,6 +1,6 @@
 [package]
 name = "bambutop"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Terminal-based status monitor for Bambu Labs printers"
 license = "MIT"
