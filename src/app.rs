@@ -95,6 +95,8 @@ pub struct App {
     /// rendering (ETA display, last updated timestamps) to avoid repeated computation.
     #[allow(dead_code)] // Getter provided for future use by UI rendering code
     timezone_offset_secs: i32,
+    /// Whether to show the help overlay
+    pub show_help: bool,
 }
 
 impl App {
@@ -125,6 +127,7 @@ impl App {
             pause_pending: false,
             toasts: VecDeque::new(),
             timezone_offset_secs: Self::compute_timezone_offset(),
+            show_help: false,
         }
     }
 
@@ -158,6 +161,7 @@ impl App {
             pause_pending: false,
             toasts: VecDeque::new(),
             timezone_offset_secs: Self::compute_timezone_offset(),
+            show_help: false,
         }
     }
 
