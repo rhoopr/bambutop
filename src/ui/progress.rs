@@ -17,7 +17,18 @@ use std::borrow::Cow;
 const MAX_JOB_NAME_DISPLAY_LEN: usize = 70;
 
 /// Renders the print progress panel showing job name, progress, layer, time remaining, and progress bar.
-pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
+///
+/// # Arguments
+/// * `frame` - The ratatui frame to render to
+/// * `printer_state` - Current printer state snapshot
+/// * `timezone_offset_secs` - Local timezone offset from UTC in seconds (for ETA clock display)
+/// * `area` - The rectangular area to render within
+pub fn render(
+    frame: &mut Frame,
+    printer_state: &PrinterState,
+    timezone_offset_secs: i32,
+    area: Rect,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -62,6 +73,14 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
 
     // Progress, Layer and time remaining
     let time_remaining = format_time(print_status.remaining_time_mins);
+    let eta_clock = format_eta_clock(print_status.remaining_time_mins, timezone_offset_secs);
+
+    // Build remaining time display with ETA clock if available
+    let remaining_display: Cow<'_, str> = if print_status.remaining_time_mins == 0 {
+        time_remaining
+    } else {
+        Cow::Owned(format!("{} (ETA {})", time_remaining, eta_clock))
+    };
 
     let layer_value: Cow<'static, str> = if print_status.total_layers > 0 {
         Cow::Owned(format!(
@@ -84,7 +103,7 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
         Span::styled(layer_value, Style::new().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled("Remaining: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(time_remaining, Style::new().fg(Color::Cyan)),
+        Span::styled(remaining_display, Style::new().fg(Color::Cyan)),
     ]);
     frame.render_widget(Paragraph::new(info_line), chunks[2]);
 
@@ -171,6 +190,56 @@ fn format_time(mins: u32) -> Cow<'static, str> {
             format!("{}m", minutes)
         })
     }
+}
+
+/// Number of seconds in an hour
+const SECS_PER_HOUR: i64 = 3600;
+/// Number of seconds in a minute
+const SECS_PER_MINUTE: i64 = 60;
+/// Number of seconds in a day (for wrapping calculations)
+const SECS_PER_DAY: i64 = 86400;
+
+/// Formats the estimated completion time as a 12-hour clock string (e.g., "2:45 PM").
+///
+/// # Arguments
+/// * `remaining_mins` - Minutes remaining until completion
+/// * `timezone_offset_secs` - Local timezone offset from UTC in seconds
+///
+/// # Returns
+/// A formatted string like "2:45 PM" or "--:--" if remaining time is 0.
+fn format_eta_clock(remaining_mins: u32, timezone_offset_secs: i32) -> Cow<'static, str> {
+    if remaining_mins == 0 {
+        return Cow::Borrowed("--:--");
+    }
+
+    // Get current UTC timestamp
+    let now_utc = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Calculate ETA in UTC seconds
+    let remaining_secs = i64::from(remaining_mins) * SECS_PER_MINUTE;
+    let eta_utc = now_utc + remaining_secs;
+
+    // Convert to local time
+    let eta_local = eta_utc + i64::from(timezone_offset_secs);
+
+    // Extract time of day (seconds since midnight, handling negative values)
+    let secs_since_midnight = eta_local.rem_euclid(SECS_PER_DAY);
+
+    let hour_24 = (secs_since_midnight / SECS_PER_HOUR) as u32;
+    let minute = ((secs_since_midnight % SECS_PER_HOUR) / SECS_PER_MINUTE) as u32;
+
+    // Convert to 12-hour format
+    let (hour_12, am_pm) = match hour_24 {
+        0 => (12, "AM"),
+        1..=11 => (hour_24, "AM"),
+        12 => (12, "PM"),
+        _ => (hour_24 - 12, "PM"),
+    };
+
+    Cow::Owned(format!("{}:{:02} {}", hour_12, minute, am_pm))
 }
 
 #[cfg(test)]
@@ -276,6 +345,86 @@ mod tests {
         fn formats_large_values() {
             let result = format_time(1500); // 25 hours
             assert_eq!(result, "25h 0m");
+        }
+    }
+
+    mod format_eta_clock_tests {
+        use super::*;
+
+        #[test]
+        fn returns_borrowed_for_zero_remaining() {
+            let result = format_eta_clock(0, 0);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "--:--");
+        }
+
+        #[test]
+        fn formats_12_hour_with_am_pm() {
+            // We can't test exact times since they depend on current time,
+            // but we can verify the format is correct (contains AM or PM)
+            let result = format_eta_clock(60, 0);
+            assert!(
+                result.ends_with("AM") || result.ends_with("PM"),
+                "Expected AM/PM suffix, got: {}",
+                result
+            );
+        }
+
+        #[test]
+        fn format_contains_colon() {
+            let result = format_eta_clock(30, 0);
+            assert!(
+                result.contains(':'),
+                "Expected colon in time format, got: {}",
+                result
+            );
+        }
+
+        #[test]
+        fn handles_positive_timezone_offset() {
+            // UTC+1 (3600 seconds)
+            let result = format_eta_clock(60, 3600);
+            assert!(
+                result.ends_with("AM") || result.ends_with("PM"),
+                "Expected valid time format with positive offset, got: {}",
+                result
+            );
+        }
+
+        #[test]
+        fn handles_negative_timezone_offset() {
+            // UTC-5 (-18000 seconds)
+            let result = format_eta_clock(60, -18000);
+            assert!(
+                result.ends_with("AM") || result.ends_with("PM"),
+                "Expected valid time format with negative offset, got: {}",
+                result
+            );
+        }
+
+        #[test]
+        fn handles_very_long_estimates() {
+            // 48 hours (2880 minutes) - should still produce valid time
+            let result = format_eta_clock(2880, 0);
+            assert!(
+                result.ends_with("AM") || result.ends_with("PM"),
+                "Expected valid time format for long estimate, got: {}",
+                result
+            );
+        }
+
+        #[test]
+        fn hour_is_in_valid_12_hour_range() {
+            // Test that the hour is between 1-12 (not 0 or 13+)
+            let result = format_eta_clock(60, 0);
+            // Parse the hour from the result (format is "H:MM AM" or "HH:MM AM")
+            let hour_str: String = result.chars().take_while(|c| *c != ':').collect();
+            let hour: u32 = hour_str.parse().expect("Failed to parse hour");
+            assert!(
+                (1..=12).contains(&hour),
+                "Hour {} is not in valid 12-hour range (1-12)",
+                hour
+            );
         }
     }
 }
