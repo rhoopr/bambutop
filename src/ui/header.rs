@@ -203,7 +203,14 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
                 ),
             ]));
         }
+    } else if !printer_state.hms_received {
+        // No HMS data received yet - show placeholder
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("--", Style::new().fg(Color::DarkGray)),
+        ]));
     } else {
+        // HMS data received with no errors
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled("All systems normal", Style::new().fg(Color::Green)),

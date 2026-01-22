@@ -69,6 +69,9 @@ pub struct PrinterState {
     /// Active HMS (Health Management System) errors
     /// Uses SmallVec since there are typically 0-3 errors at a time
     pub hms_errors: SmallVec<[HmsError; 4]>,
+    /// Whether HMS data has been received from the printer.
+    /// Used to distinguish "no data yet" from "no errors".
+    pub hms_received: bool,
 }
 
 /// Temperature threshold (in degrees C) below target that indicates heating is in progress.
@@ -512,6 +515,7 @@ impl PrinterState {
 
         // HMS errors
         if let Some(hms_list) = &report.hms {
+            self.hms_received = true;
             let now = Instant::now();
             self.hms_errors = hms_list
                 .iter()
