@@ -28,19 +28,44 @@ pub fn run_setup_wizard() -> Result<Config> {
     println!("  - Access code (found in printer settings under LAN mode)");
     println!();
 
-    let ip = prompt_ip("Printer IP address")?;
-    let serial = prompt_serial("Printer serial number")?;
-    let access_code = prompt_access_code("Access code")?;
+    let primary_ip = prompt_ip("Printer IP address")?;
+    let primary_serial = prompt_serial("Printer serial number")?;
+    let primary_access_code = prompt_access_code("Access code")?;
 
-    let config = Config {
-        printer: PrinterConfig {
-            name: None,
+    // Ask if user wants to add more printers
+    let mut extra_printers = Vec::new();
+    println!();
+    while prompt_yes_no("Add another printer?")? {
+        println!();
+        println!("Setting up additional printer...");
+        println!();
+
+        let name = prompt_optional("Printer name (optional, press Enter to skip)")?;
+        let ip = prompt_ip("Printer IP address")?;
+        let serial = prompt_serial("Printer serial number")?;
+        let access_code = prompt_access_code("Access code")?;
+
+        extra_printers.push(PrinterConfig {
+            name,
             ip,
             serial,
             access_code,
             port: crate::config::DEFAULT_MQTT_PORT,
+        });
+
+        println!();
+        println!("Printer added successfully!");
+    }
+
+    let config = Config {
+        printer: PrinterConfig {
+            name: None,
+            ip: primary_ip,
+            serial: primary_serial,
+            access_code: primary_access_code,
+            port: crate::config::DEFAULT_MQTT_PORT,
         },
-        extra_printers: vec![],
+        extra_printers,
     };
 
     config.save()?;
@@ -48,6 +73,10 @@ pub fn run_setup_wizard() -> Result<Config> {
     let config_path = Config::config_path()?;
     println!();
     println!("Configuration saved to: {}", config_path.display());
+    let printer_count = 1 + config.extra_printers.len();
+    if printer_count > 1 {
+        println!("  {} printers configured.", printer_count);
+    }
     println!();
 
     Ok(config)
@@ -146,5 +175,53 @@ fn prompt(label: &str) -> Result<String> {
         }
 
         return Ok(trimmed.to_string());
+    }
+}
+
+/// Prompts for optional user input. Returns None if the user presses Enter without input.
+fn prompt_optional(label: &str) -> Result<Option<String>> {
+    print!("{}: ", label);
+    io::stdout()
+        .flush()
+        .context("Failed to flush stdout during prompt")?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("Failed to read user input")?;
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+/// Prompts for a yes/no response. Returns true for 'y'/'yes', false for 'n'/'no'.
+fn prompt_yes_no(label: &str) -> Result<bool> {
+    loop {
+        print!("{} (y/n): ", label);
+        io::stdout()
+            .flush()
+            .context("Failed to flush stdout during prompt")?;
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .context("Failed to read user input")?;
+
+        match input.trim().to_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            "" => {
+                println!("  Please enter 'y' for yes or 'n' for no.");
+                continue;
+            }
+            _ => {
+                println!("  Invalid response. Please enter 'y' for yes or 'n' for no.");
+                continue;
+            }
+        }
     }
 }
