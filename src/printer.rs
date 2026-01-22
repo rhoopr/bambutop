@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 
 /// Special tray value indicating external spool (not in AMS).
@@ -65,7 +66,8 @@ pub struct PrinterState {
     /// WiFi signal strength (e.g., "-45dBm")
     pub wifi_signal: String,
     /// Active HMS (Health Management System) errors
-    pub hms_errors: Vec<HmsError>,
+    /// Uses SmallVec since there are typically 0-3 errors at a time
+    pub hms_errors: SmallVec<[HmsError; 4]>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -169,7 +171,9 @@ pub struct Speeds {
 
 #[derive(Debug, Clone, Default)]
 pub struct AmsState {
-    pub units: Vec<AmsUnit>,
+    /// AMS units (typically 1-4 units)
+    /// Uses SmallVec since most setups have 1-4 AMS units
+    pub units: SmallVec<[AmsUnit; 4]>,
     /// The currently active tray slot (0-3 within a unit)
     pub current_tray: Option<u8>,
     /// The currently active AMS unit index (0-3)
@@ -180,7 +184,9 @@ pub struct AmsState {
 pub struct AmsUnit {
     pub id: u8,
     pub humidity: u8,
-    pub trays: Vec<AmsTray>,
+    /// Tray slots in this AMS unit (typically 4, or 2 for AMS Lite)
+    /// Uses SmallVec since AMS has exactly 4 slots (or 2 for Lite)
+    pub trays: SmallVec<[AmsTray; 4]>,
     /// True if this is an AMS Lite unit (2 trays instead of 4)
     pub is_lite: bool,
 }
@@ -499,7 +505,7 @@ impl PrinterState {
             ams_state.units = units
                 .iter()
                 .map(|u| {
-                    let trays: Vec<AmsTray> = u
+                    let trays: SmallVec<[AmsTray; 4]> = u
                         .tray
                         .as_ref()
                         .map(|trays| {
@@ -655,6 +661,7 @@ fn model_from_serial(serial: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::smallvec;
 
     mod speed_level_to_percent_tests {
         use super::*;
@@ -1363,10 +1370,10 @@ mod tests {
         fn returns_none_when_no_tray_selected() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: vec![AmsUnit {
+                    units: smallvec![AmsUnit {
                         id: 0,
                         humidity: 4,
-                        trays: vec![AmsTray {
+                        trays: smallvec![AmsTray {
                             id: 0,
                             material: "PLA".to_string(),
                             remaining: 100,
@@ -1386,10 +1393,10 @@ mod tests {
         fn returns_material_when_tray_selected() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: vec![AmsUnit {
+                    units: smallvec![AmsUnit {
                         id: 0,
                         humidity: 4,
-                        trays: vec![AmsTray {
+                        trays: smallvec![AmsTray {
                             id: 0,
                             material: "PETG".to_string(),
                             remaining: 85,
@@ -1409,10 +1416,10 @@ mod tests {
         fn returns_none_when_tray_empty() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: vec![AmsUnit {
+                    units: smallvec![AmsUnit {
                         id: 0,
                         humidity: 4,
-                        trays: vec![AmsTray {
+                        trays: smallvec![AmsTray {
                             id: 0,
                             material: String::new(), // Empty tray
                             remaining: 0,
@@ -1432,11 +1439,11 @@ mod tests {
         fn handles_multi_unit_selection() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: vec![
+                    units: smallvec![
                         AmsUnit {
                             id: 0,
                             humidity: 4,
-                            trays: vec![AmsTray {
+                            trays: smallvec![AmsTray {
                                 id: 0,
                                 material: "PLA".to_string(),
                                 remaining: 100,
@@ -1447,7 +1454,7 @@ mod tests {
                         AmsUnit {
                             id: 1,
                             humidity: 3,
-                            trays: vec![AmsTray {
+                            trays: smallvec![AmsTray {
                                 id: 0,
                                 material: "ABS".to_string(),
                                 remaining: 50,
