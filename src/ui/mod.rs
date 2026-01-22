@@ -56,7 +56,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(content_area);
 
     header::render(frame, app, &printer_state, chunks[0]);
-    progress::render(frame, &printer_state, chunks[1]);
+    progress::render(frame, &printer_state, app.timezone_offset_secs(), chunks[1]);
 
     // Middle row: temps on left (flexible), AMS on right (fixed width)
     // AMS width: 35 inner content + 2 borders = 37
