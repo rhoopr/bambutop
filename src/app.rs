@@ -66,10 +66,18 @@ pub struct App {
     pub pause_pending: bool,
     /// Queue of toast notifications to display
     pub toasts: VecDeque<Toast>,
+    /// Cached timezone offset in seconds from UTC (computed once at startup).
+    /// Positive values are east of UTC, negative values are west.
+    /// Note: This field is intentionally cached at startup for use by time-related
+    /// rendering (ETA display, last updated timestamps) to avoid repeated computation.
+    #[allow(dead_code)] // Getter provided for future use by UI rendering code
+    timezone_offset_secs: i32,
 }
 
 impl App {
     /// Creates a new App instance with the given shared printer state.
+    ///
+    /// Computes and caches the local timezone offset at startup.
     pub fn new(printer_state: SharedPrinterState) -> Self {
         Self {
             printer_state,
@@ -82,7 +90,72 @@ impl App {
             cancel_pending: false,
             pause_pending: false,
             toasts: VecDeque::new(),
+            timezone_offset_secs: Self::compute_timezone_offset(),
         }
+    }
+
+    /// Computes the local timezone offset in seconds from UTC.
+    ///
+    /// Uses the system's `date` command to get the timezone offset.
+    /// This is computed once at startup to avoid repeated overhead.
+    /// Returns the offset where positive values are east of UTC and negative values are west.
+    fn compute_timezone_offset() -> i32 {
+        use std::process::Command;
+
+        // Use the `date` command to get timezone offset in +HHMM/-HHMM format
+        // This works on macOS, Linux, and most Unix-like systems
+        if let Ok(output) = Command::new("date").arg("+%z").output() {
+            if output.status.success() {
+                if let Ok(offset_str) = std::str::from_utf8(&output.stdout) {
+                    return Self::parse_timezone_offset(offset_str.trim());
+                }
+            }
+        }
+
+        // Fallback: Use environment variable TZ parsing or assume UTC
+        if let Ok(tz) = std::env::var("TZ") {
+            // Simple parsing for common formats like "EST5EDT" or "UTC"
+            if tz.starts_with("UTC") || tz.starts_with("GMT") {
+                // Parse optional offset like "UTC-5" or "GMT+1"
+                if let Some(offset_part) = tz.get(3..) {
+                    if let Ok(hours) = offset_part.parse::<i32>() {
+                        // Note: TZ convention is opposite (EST5 means UTC-5)
+                        return -hours * 3600;
+                    }
+                }
+                return 0;
+            }
+        }
+
+        // Final fallback: assume UTC
+        0
+    }
+
+    /// Parses a timezone offset string in +HHMM or -HHMM format.
+    fn parse_timezone_offset(offset_str: &str) -> i32 {
+        if offset_str.len() >= 5 {
+            let sign = if offset_str.starts_with('-') { -1 } else { 1 };
+            // Parse "+HHMM" or "-HHMM" format
+            if let (Ok(hours), Ok(mins)) = (
+                offset_str[1..3].parse::<i32>(),
+                offset_str[3..5].parse::<i32>(),
+            ) {
+                return sign * (hours * 3600 + mins * 60);
+            }
+        }
+        0
+    }
+
+    /// Returns the cached timezone offset in seconds from UTC.
+    ///
+    /// Positive values indicate timezones east of UTC (e.g., +3600 for UTC+1).
+    /// Negative values indicate timezones west of UTC (e.g., -18000 for UTC-5).
+    ///
+    /// This value is computed once at startup and cached for use by time-related
+    /// rendering (ETA display, last updated timestamps).
+    #[allow(dead_code)] // Provided for future use by UI rendering code
+    pub fn timezone_offset_secs(&self) -> i32 {
+        self.timezone_offset_secs
     }
 
     /// Handles an MQTT event, updating application state accordingly.
@@ -212,6 +285,35 @@ mod tests {
     fn create_test_app() -> App {
         let printer_state = Arc::new(Mutex::new(PrinterState::default()));
         App::new(printer_state)
+    }
+
+    mod timezone_offset_tests {
+        use super::*;
+
+        #[test]
+        fn timezone_offset_is_within_valid_range() {
+            let app = create_test_app();
+            let offset = app.timezone_offset_secs();
+            // Valid timezone offsets are between UTC-12 and UTC+14
+            // In seconds: -43200 to +50400
+            assert!(
+                (-43200..=50400).contains(&offset),
+                "Timezone offset {} is outside valid range",
+                offset
+            );
+        }
+
+        #[test]
+        fn timezone_offset_is_consistent() {
+            // Create two apps and verify they get the same timezone offset
+            let app1 = create_test_app();
+            let app2 = create_test_app();
+            assert_eq!(
+                app1.timezone_offset_secs(),
+                app2.timezone_offset_secs(),
+                "Timezone offset should be consistent across App instances"
+            );
+        }
     }
 
     mod is_connection_stale_tests {
