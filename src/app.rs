@@ -333,20 +333,24 @@ impl App {
     /// - `Error`: Stores the error message for display
     pub fn handle_mqtt_event(&mut self, event: MqttEvent) {
         match event {
-            MqttEvent::Connected => {
+            MqttEvent::Connected { printer_index } => {
                 self.connected = true;
                 self.error_message = None;
+                // Update multi-printer state if available
+                self.set_printer_connected(printer_index, true);
             }
-            MqttEvent::Disconnected => {
+            MqttEvent::Disconnected { printer_index } => {
                 self.connected = false;
+                self.set_printer_connected(printer_index, false);
             }
-            MqttEvent::StateUpdated => {
+            MqttEvent::StateUpdated { printer_index } => {
                 // State is updated via shared reference, just record the time
                 self.connected = true;
                 self.last_update = Some(Instant::now());
+                self.set_printer_last_update(printer_index, Some(Instant::now()));
             }
-            MqttEvent::Error(msg) => {
-                self.error_message = Some(msg);
+            MqttEvent::Error { message, .. } => {
+                self.error_message = Some(message);
             }
         }
     }
