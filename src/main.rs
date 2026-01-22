@@ -14,6 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use mqtt::MqttClient;
+use printer::{speed_level_to_name, speed_level_to_percent};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,17 +160,6 @@ const SPEED_LEVEL_MIN: u8 = 1;
 /// Maximum speed level (Ludicrous)
 const SPEED_LEVEL_MAX: u8 = 4;
 
-/// Returns a display string for a speed level (e.g., "Standard (100%)").
-fn speed_level_display(level: u8) -> &'static str {
-    match level {
-        1 => "Silent (50%)",
-        2 => "Standard (100%)",
-        3 => "Sport (124%)",
-        4 => "Ludicrous (166%)",
-        _ => "Unknown",
-    }
-}
-
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -236,11 +226,16 @@ async fn run_app(
                                     .speed_level;
                                 if current < SPEED_LEVEL_MAX {
                                     let new_level = current + 1;
-                                    let _ = mqtt_client.set_speed_level(new_level).await;
-                                    app.toast_success(format!(
-                                        "Speed: {}",
-                                        speed_level_display(new_level)
-                                    ));
+                                    let speed_display = format!(
+                                        "{} ({}%)",
+                                        speed_level_to_name(new_level),
+                                        speed_level_to_percent(new_level)
+                                    );
+                                    if let Err(e) = mqtt_client.set_speed_level(new_level).await {
+                                        app.toast_error(format!("Speed change failed: {}", e));
+                                    } else {
+                                        app.toast_success(format!("Speed: {}", speed_display));
+                                    }
                                 }
                             }
                         }
@@ -254,11 +249,16 @@ async fn run_app(
                                     .speed_level;
                                 if current > SPEED_LEVEL_MIN {
                                     let new_level = current - 1;
-                                    let _ = mqtt_client.set_speed_level(new_level).await;
-                                    app.toast_success(format!(
-                                        "Speed: {}",
-                                        speed_level_display(new_level)
-                                    ));
+                                    let speed_display = format!(
+                                        "{} ({}%)",
+                                        speed_level_to_name(new_level),
+                                        speed_level_to_percent(new_level)
+                                    );
+                                    if let Err(e) = mqtt_client.set_speed_level(new_level).await {
+                                        app.toast_error(format!("Speed change failed: {}", e));
+                                    } else {
+                                        app.toast_success(format!("Speed: {}", speed_display));
+                                    }
                                 }
                             }
                         }
@@ -271,35 +271,40 @@ async fn run_app(
                                     .lights
                                     .chamber_light;
                                 let new_state = !current;
-                                let _ = mqtt_client.set_chamber_light(new_state).await;
                                 let status = if new_state { "ON" } else { "OFF" };
-                                app.toast_success(format!("Light: {}", status));
+                                if let Err(e) = mqtt_client.set_chamber_light(new_state).await {
+                                    app.toast_error(format!("Light toggle failed: {}", e));
+                                } else {
+                                    app.toast_success(format!("Light: {}", status));
+                                }
                             }
                         }
                         KeyCode::Char(' ') => {
                             if !app.controls_locked {
-                                let gcode_state = app
-                                    .printer_state
-                                    .lock()
-                                    .expect("state lock poisoned")
-                                    .print_status
-                                    .gcode_state
-                                    .clone();
-                                let has_active_job =
-                                    gcode_state == "RUNNING" || gcode_state == "PAUSE";
+                                let (is_running, is_paused) = {
+                                    let state =
+                                        app.printer_state.lock().expect("state lock poisoned");
+                                    let gcode = state.print_status.gcode_state.as_str();
+                                    (gcode == "RUNNING", gcode == "PAUSE")
+                                };
+                                let has_active_job = is_running || is_paused;
                                 if has_active_job {
                                     if app.pause_pending {
                                         // Second press - confirm pause/resume
-                                        match gcode_state.as_str() {
-                                            "RUNNING" => {
-                                                let _ = mqtt_client.pause_print().await;
-                                                app.toast_warning("Print paused");
+                                        if is_running {
+                                            match mqtt_client.pause_print().await {
+                                                Ok(_) => app.toast_warning("Print paused"),
+                                                Err(e) => app
+                                                    .toast_error(format!("Failed to pause: {}", e)),
                                             }
-                                            "PAUSE" => {
-                                                let _ = mqtt_client.resume_print().await;
-                                                app.toast_success("Print resumed");
+                                        } else if is_paused {
+                                            match mqtt_client.resume_print().await {
+                                                Ok(_) => app.toast_success("Print resumed"),
+                                                Err(e) => app.toast_error(format!(
+                                                    "Failed to resume: {}",
+                                                    e
+                                                )),
                                             }
-                                            _ => {}
                                         }
                                         app.pause_pending = false;
                                     } else {
@@ -313,21 +318,22 @@ async fn run_app(
                         }
                         KeyCode::Char('c') => {
                             if !app.controls_locked {
-                                let gcode_state = app
-                                    .printer_state
-                                    .lock()
-                                    .expect("state lock poisoned")
-                                    .print_status
-                                    .gcode_state
-                                    .clone();
-                                let has_active_job =
-                                    gcode_state == "RUNNING" || gcode_state == "PAUSE";
+                                let has_active_job = {
+                                    let state =
+                                        app.printer_state.lock().expect("state lock poisoned");
+                                    let gcode = state.print_status.gcode_state.as_str();
+                                    gcode == "RUNNING" || gcode == "PAUSE"
+                                };
                                 if has_active_job {
                                     if app.cancel_pending {
                                         // Second press - confirm cancel
-                                        let _ = mqtt_client.stop_print().await;
+                                        match mqtt_client.stop_print().await {
+                                            Ok(_) => app.toast_error("Print cancelled"),
+                                            Err(e) => {
+                                                app.toast_error(format!("Failed to cancel: {}", e))
+                                            }
+                                        }
                                         app.cancel_pending = false;
-                                        app.toast_error("Print cancelled");
                                     } else {
                                         // First press - request confirmation
                                         app.cancel_pending = true;
