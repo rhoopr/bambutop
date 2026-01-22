@@ -34,11 +34,13 @@ pub fn run_setup_wizard() -> Result<Config> {
 
     let config = Config {
         printer: PrinterConfig {
+            name: None,
             ip,
             serial,
             access_code,
             port: crate::config::DEFAULT_MQTT_PORT,
         },
+        extra_printers: vec![],
     };
 
     config.save()?;
