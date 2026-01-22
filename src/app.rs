@@ -7,6 +7,7 @@
 use crate::mqtt::{MqttEvent, SharedPrinterState};
 use crate::printer::PrinterState;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How long toasts are displayed before auto-dismissing
@@ -45,11 +46,26 @@ pub struct Toast {
 /// Application state for the TUI.
 ///
 /// Manages the connection state, printer data, and UI preferences.
+/// Supports multiple printer connections with an active printer selection.
 pub struct App {
-    /// Shared printer state (updated by MQTT task)
+    /// Shared printer state (updated by MQTT task) - kept for backward compatibility
     pub printer_state: SharedPrinterState,
-    /// Whether the MQTT connection is active
+    /// Whether the MQTT connection is active - kept for backward compatibility
     pub connected: bool,
+    // Multi-printer state management fields - these are new infrastructure for multi-printer
+    // support and will be used by main.rs and UI code once multi-printer feature is integrated.
+    /// All printer states for multi-printer support
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    printers: Vec<SharedPrinterState>,
+    /// Connection status for each printer (parallel to printers vec)
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    printer_connections: Vec<bool>,
+    /// Last update timestamp for each printer (parallel to printers vec)
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    printer_last_updates: Vec<Option<Instant>>,
+    /// Index of the currently active/selected printer
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    active_printer_index: usize,
     /// Timestamp of the last state update from the printer
     pub last_update: Option<Instant>,
     /// Current error message to display, if any
@@ -78,10 +94,20 @@ impl App {
     /// Creates a new App instance with the given shared printer state.
     ///
     /// Computes and caches the local timezone offset at startup.
+    /// For backward compatibility, initializes multi-printer support with the single printer.
     pub fn new(printer_state: SharedPrinterState) -> Self {
+        // Initialize with single printer for backward compatibility
+        let printers = vec![Arc::clone(&printer_state)];
+        let printer_connections = vec![false];
+        let printer_last_updates = vec![None];
+
         Self {
             printer_state,
             connected: false,
+            printers,
+            printer_connections,
+            printer_last_updates,
+            active_printer_index: 0,
             last_update: None,
             error_message: None,
             should_quit: false,
@@ -92,6 +118,147 @@ impl App {
             toasts: VecDeque::new(),
             timezone_offset_secs: Self::compute_timezone_offset(),
         }
+    }
+
+    /// Creates a new App instance with multiple printer states.
+    ///
+    /// The first printer in the list becomes the active printer.
+    /// Panics if the printers vector is empty.
+    #[allow(dead_code)] // Will be used by multi-printer integration in main.rs
+    pub fn new_multi(printers: Vec<SharedPrinterState>) -> Self {
+        assert!(!printers.is_empty(), "At least one printer is required");
+
+        let printer_count = printers.len();
+        let printer_state = Arc::clone(&printers[0]);
+        let printer_connections = vec![false; printer_count];
+        let printer_last_updates = vec![None; printer_count];
+
+        Self {
+            printer_state,
+            connected: false,
+            printers,
+            printer_connections,
+            printer_last_updates,
+            active_printer_index: 0,
+            last_update: None,
+            error_message: None,
+            should_quit: false,
+            controls_locked: true,
+            use_celsius: true,
+            cancel_pending: false,
+            pause_pending: false,
+            toasts: VecDeque::new(),
+            timezone_offset_secs: Self::compute_timezone_offset(),
+        }
+    }
+
+    // ========================================================================
+    // Multi-printer accessors and mutators
+    // These methods provide the API for multi-printer support and will be used
+    // by main.rs and UI code once multi-printer feature is fully integrated.
+    // ========================================================================
+
+    /// Returns the currently active printer state, if any printers exist.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn get_active_printer(&self) -> Option<&SharedPrinterState> {
+        self.printers.get(self.active_printer_index)
+    }
+
+    /// Returns the printer state at the given index, if it exists.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn get_printer(&self, index: usize) -> Option<&SharedPrinterState> {
+        self.printers.get(index)
+    }
+
+    /// Returns the number of printers that are currently connected.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn get_connected_count(&self) -> usize {
+        self.printer_connections.iter().filter(|&&c| c).count()
+    }
+
+    /// Returns the total number of printers.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn printer_count(&self) -> usize {
+        self.printers.len()
+    }
+
+    /// Returns the index of the currently active printer.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn active_printer_index(&self) -> usize {
+        self.active_printer_index
+    }
+
+    /// Sets the active printer to the given index.
+    ///
+    /// Returns true if the index was valid and the active printer was changed,
+    /// false if the index was out of bounds.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn set_active_printer(&mut self, index: usize) -> bool {
+        if index < self.printers.len() {
+            self.active_printer_index = index;
+            // Update legacy fields to point to the new active printer
+            self.printer_state = Arc::clone(&self.printers[index]);
+            self.connected = self.printer_connections[index];
+            self.last_update = self.printer_last_updates[index];
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Adds a new printer to the list.
+    ///
+    /// Returns the index of the newly added printer.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn add_printer(&mut self, printer_state: SharedPrinterState) -> usize {
+        let index = self.printers.len();
+        self.printers.push(printer_state);
+        self.printer_connections.push(false);
+        self.printer_last_updates.push(None);
+        index
+    }
+
+    /// Updates the connection status for a specific printer.
+    ///
+    /// Also updates the legacy `connected` field if this is the active printer.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn set_printer_connected(&mut self, index: usize, connected: bool) {
+        if let Some(conn) = self.printer_connections.get_mut(index) {
+            *conn = connected;
+            // Update legacy field if this is the active printer
+            if index == self.active_printer_index {
+                self.connected = connected;
+            }
+        }
+    }
+
+    /// Updates the last update timestamp for a specific printer.
+    ///
+    /// Also updates the legacy `last_update` field if this is the active printer.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn set_printer_last_update(&mut self, index: usize, timestamp: Option<Instant>) {
+        if let Some(last_update) = self.printer_last_updates.get_mut(index) {
+            *last_update = timestamp;
+            // Update legacy field if this is the active printer
+            if index == self.active_printer_index {
+                self.last_update = timestamp;
+            }
+        }
+    }
+
+    /// Returns the connection status for a specific printer.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn is_printer_connected(&self, index: usize) -> bool {
+        self.printer_connections
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Returns the last update timestamp for a specific printer.
+    #[allow(dead_code)] // Will be used by multi-printer integration
+    pub fn get_printer_last_update(&self, index: usize) -> Option<Instant> {
+        self.printer_last_updates.get(index).copied().flatten()
     }
 
     /// Computes the local timezone offset in seconds from UTC.
