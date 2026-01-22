@@ -8,14 +8,17 @@ A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for yo
 
 ## What You Can Monitor
 
-- **Print Progress** — Job name, layer count, and time remaining with progress bar
+- **Print Progress** — Job name, layer count, time remaining, and ETA clock time (e.g., "1h 30m (ETA 2:45 PM)")
+- **Print Phase** — Current activity: Heating Bed, Heating Nozzle, Auto-Leveling, Printing, etc.
 - **Temperatures** — Nozzle, bed, and chamber with visual gauges
 - **Smart Chamber Display** — Shows safe temperature range based on active filament type (PLA, PETG, ABS, etc.)
 - **Fan Speeds** — Part cooling, auxiliary, and chamber fan percentages
 - **Printer Controls** — Current speed setting (Silent/Standard/Sport/Ludicrous), chamber light toggle
 - **AMS Status** — Humidity grade (A-E), filament colors, materials, and remaining percentages with active slot highlighting
-- **HMS Errors** — Health Management System notifications with severity coloring
+- **HMS Errors** — Health Management System notifications with severity coloring and timestamps
+- **Multi-Printer Support** — Monitor multiple printers with Tab/number key navigation
 - **Toast Notifications** — Brief feedback messages when commands succeed or fail
+- **Help Overlay** — Press `?` or `h` to see all keyboard shortcuts
 
 ## Supported Printers
 
@@ -57,7 +60,29 @@ sudo mv bambutop /usr/local/bin/
 bambutop
 ```
 
-On first run, you'll be guided through a setup wizard to connect to your printer.
+On first run, you'll be guided through a setup wizard to connect to your printer. You can add multiple printers during setup or later by editing the config file.
+
+## Multi-Printer Setup
+
+BambuTop supports monitoring multiple printers simultaneously. The setup wizard will ask if you want to add additional printers after configuring the first one.
+
+Configuration is stored in `~/.config/bambutop/config.toml`:
+
+```toml
+[[printers]]
+name = "Office P1S"
+ip = "192.168.1.100"
+serial = "01P00A123456789"
+access_code = "12345678"
+
+[[printers]]
+name = "Workshop X1C"
+ip = "192.168.1.101"
+serial = "01S00A987654321"
+access_code = "87654321"
+```
+
+Use `Tab`/`Shift+Tab` to cycle between printers, or press `1-9` to jump directly.
 
 ## Finding Your Printer Details
 
@@ -73,13 +98,17 @@ You'll need three pieces of information from your printer:
 
 | Key | Action |
 |-----|--------|
+| `?` / `h` | Show help overlay |
 | `x` | Toggle controls lock/unlock |
 | `+` / `-` | Adjust print speed (Silent/Standard/Sport/Ludicrous) |
 | `l` | Toggle chamber light |
 | `Space` | Pause/resume print (requires confirmation) |
 | `c` | Cancel print (requires confirmation) |
 | `u` | Toggle temperature unit (Celsius/Fahrenheit) |
-| `q` or `Esc` | Quit |
+| `Tab` | Switch to next printer |
+| `Shift+Tab` | Switch to previous printer |
+| `1-9` | Jump to printer by number |
+| `q` / `Esc` | Quit |
 
 ## Command-Line Options
 
