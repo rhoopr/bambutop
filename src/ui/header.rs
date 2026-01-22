@@ -15,6 +15,12 @@ use ratatui::{
 use smallvec::SmallVec;
 use std::borrow::Cow;
 
+/// Seconds before data is considered slightly stale (yellow warning)
+const STALE_WARNING_SECS: u64 = 5;
+
+/// Seconds before data is considered critically stale (red warning)
+const STALE_CRITICAL_SECS: u64 = 30;
+
 /// WiFi signal threshold for strong signal (dBm)
 const WIFI_STRONG_THRESHOLD: i32 = -50;
 
@@ -89,7 +95,7 @@ pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: 
 
 fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     let status = app.status_text();
-    let is_stale = app.is_connection_stale();
+    let elapsed_secs = app.time_since_update().map(|d| d.as_secs());
     let status_color = match status {
         "Printing" => Color::Green,
         "Paused" => Color::Yellow,
@@ -126,12 +132,17 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         ),
     ];
 
-    if is_stale {
+    // Add color-coded stale data indicator based on elapsed time
+    if let Some(secs) = elapsed_secs {
+        let (indicator_color, indicator_text) = if secs >= STALE_CRITICAL_SECS {
+            (Color::Red, format!("\u{26A0} {}s", secs))
+        } else if secs >= STALE_WARNING_SECS {
+            (Color::Yellow, format!("\u{26A0} {}s", secs))
+        } else {
+            (Color::DarkGray, format!("{}s", secs))
+        };
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            "\u{26A0} Stale",
-            Style::new().fg(Color::Yellow),
-        ));
+        spans.push(Span::styled(indicator_text, Style::new().fg(indicator_color)));
     }
 
     let status_line = Line::from(spans);
