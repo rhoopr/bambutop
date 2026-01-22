@@ -5,6 +5,7 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Tr
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -89,9 +90,12 @@ pub type SharedPrinterState = Arc<Mutex<PrinterState>>;
 
 pub struct MqttClient {
     client: AsyncClient,
-    config: PrinterConfig,
     /// Handle to the background event loop task for graceful shutdown
     _event_loop_handle: JoinHandle<()>,
+    /// Cached request topic to avoid repeated format! allocations
+    request_topic: String,
+    /// Atomic counter for generating unique sequence IDs for MQTT commands
+    sequence_id: AtomicU64,
 }
 
 impl MqttClient {
@@ -185,36 +189,54 @@ impl MqttClient {
         });
 
         // Subscribe to printer reports
-        let topic = format!("device/{}/report", config.serial);
-        tokio::time::timeout(OPERATION_TIMEOUT, client.subscribe(&topic, QoS::AtMostOnce))
-            .await
-            .context("Subscribe operation timed out")?
-            .context("Failed to subscribe to printer topic")?;
+        let report_topic = format!("device/{}/report", config.serial);
+        tokio::time::timeout(
+            OPERATION_TIMEOUT,
+            client.subscribe(&report_topic, QoS::AtMostOnce),
+        )
+        .await
+        .context("Subscribe operation timed out")?
+        .context("Failed to subscribe to printer topic")?;
+
+        // Cache the request topic to avoid repeated format! allocations
+        let request_topic = format!("device/{}/request", config.serial);
 
         Ok((
             Self {
                 client,
-                config,
                 _event_loop_handle: event_loop_handle,
+                request_topic,
+                sequence_id: AtomicU64::new(1),
             },
             state,
             rx,
         ))
     }
 
+    /// Generates the next unique sequence ID for MQTT commands.
+    ///
+    /// Sequence IDs are monotonically increasing values used to correlate
+    /// requests with responses from the printer.
+    fn next_sequence_id(&self) -> String {
+        self.sequence_id.fetch_add(1, Ordering::Relaxed).to_string()
+    }
+
     pub async fn request_full_status(&self) -> Result<()> {
-        let topic = format!("device/{}/request", self.config.serial);
         let payload = serde_json::json!({
             "pushing": {
-                "sequence_id": "0",
+                "sequence_id": self.next_sequence_id(),
                 "command": "pushall"
             }
         });
 
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
         )
         .await
         .context("Publish operation timed out")?
@@ -228,10 +250,9 @@ impl MqttClient {
     /// # Arguments
     /// * `level` - Speed level: 1=Silent, 2=Standard, 3=Sport, 4=Ludicrous
     pub async fn set_speed_level(&self, level: u8) -> Result<()> {
-        let topic = format!("device/{}/request", self.config.serial);
         let payload = serde_json::json!({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self.next_sequence_id(),
                 "command": "print_speed",
                 "param": level.to_string()
             }
@@ -239,8 +260,12 @@ impl MqttClient {
 
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
         )
         .await
         .context("Set speed operation timed out")?
@@ -254,11 +279,10 @@ impl MqttClient {
     /// # Arguments
     /// * `on` - true to turn the light on, false to turn it off
     pub async fn set_chamber_light(&self, on: bool) -> Result<()> {
-        let topic = format!("device/{}/request", self.config.serial);
         let mode = if on { "on" } else { "off" };
         let payload = serde_json::json!({
             "system": {
-                "sequence_id": "0",
+                "sequence_id": self.next_sequence_id(),
                 "command": "ledctrl",
                 "led_node": "chamber_light",
                 "led_mode": mode
@@ -267,8 +291,12 @@ impl MqttClient {
 
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
         )
         .await
         .context("Set chamber light operation timed out")?
@@ -279,18 +307,21 @@ impl MqttClient {
 
     /// Pauses the current print job.
     pub async fn pause_print(&self) -> Result<()> {
-        let topic = format!("device/{}/request", self.config.serial);
         let payload = serde_json::json!({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self.next_sequence_id(),
                 "command": "pause"
             }
         });
 
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
         )
         .await
         .context("Pause print operation timed out")?
@@ -301,18 +332,21 @@ impl MqttClient {
 
     /// Resumes a paused print job.
     pub async fn resume_print(&self) -> Result<()> {
-        let topic = format!("device/{}/request", self.config.serial);
         let payload = serde_json::json!({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self.next_sequence_id(),
                 "command": "resume"
             }
         });
 
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
         )
         .await
         .context("Resume print operation timed out")?
@@ -323,18 +357,21 @@ impl MqttClient {
 
     /// Stops/cancels the current print job.
     pub async fn stop_print(&self) -> Result<()> {
-        let topic = format!("device/{}/request", self.config.serial);
         let payload = serde_json::json!({
             "print": {
-                "sequence_id": "0",
+                "sequence_id": self.next_sequence_id(),
                 "command": "stop"
             }
         });
 
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .publish(&topic, QoS::AtMostOnce, false, payload.to_string()),
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
         )
         .await
         .context("Stop print operation timed out")?
