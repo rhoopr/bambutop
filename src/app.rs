@@ -6,7 +6,38 @@
 
 use crate::mqtt::{MqttEvent, SharedPrinterState};
 use crate::printer::PrinterState;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+/// How long toasts are displayed before auto-dismissing
+const TOAST_DURATION: Duration = Duration::from_secs(3);
+
+/// Maximum number of toasts to display at once
+const MAX_TOASTS: usize = 3;
+
+/// Severity level for toast notifications, determines color
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastSeverity {
+    /// Informational message (cyan)
+    Info,
+    /// Success message (green)
+    Success,
+    /// Warning message (yellow)
+    Warning,
+    /// Error message (red)
+    Error,
+}
+
+/// A toast notification message
+#[derive(Clone, Debug)]
+pub struct Toast {
+    /// The message to display
+    pub message: String,
+    /// Severity level (determines color)
+    pub severity: ToastSeverity,
+    /// When the toast was created
+    pub created_at: Instant,
+}
 
 /// Application state for the TUI.
 ///
@@ -22,6 +53,16 @@ pub struct App {
     pub error_message: Option<String>,
     /// Flag to signal the application should exit
     pub should_quit: bool,
+    /// Whether printer controls are locked (prevents accidental changes)
+    pub controls_locked: bool,
+    /// Whether to display temperatures in Celsius (true) or Fahrenheit (false)
+    pub use_celsius: bool,
+    /// Whether a cancel confirmation is pending (user pressed 'c' once)
+    pub cancel_pending: bool,
+    /// Whether a pause confirmation is pending (user pressed Space once)
+    pub pause_pending: bool,
+    /// Queue of toast notifications to display
+    pub toasts: VecDeque<Toast>,
 }
 
 impl App {
@@ -33,6 +74,11 @@ impl App {
             last_update: None,
             error_message: None,
             should_quit: false,
+            controls_locked: true,
+            use_celsius: true,
+            cancel_pending: false,
+            pause_pending: false,
+            toasts: VecDeque::new(),
         }
     }
 
@@ -98,5 +144,46 @@ impl App {
             .lock()
             .expect("state lock poisoned")
             .clone()
+    }
+
+    /// Adds a toast notification with the given message and severity.
+    pub fn add_toast(&mut self, message: impl Into<String>, severity: ToastSeverity) {
+        let toast = Toast {
+            message: message.into(),
+            severity,
+            created_at: Instant::now(),
+        };
+        self.toasts.push_back(toast);
+
+        // Limit the number of toasts
+        while self.toasts.len() > MAX_TOASTS {
+            self.toasts.pop_front();
+        }
+    }
+
+    /// Adds an info toast (convenience method).
+    pub fn toast_info(&mut self, message: impl Into<String>) {
+        self.add_toast(message, ToastSeverity::Info);
+    }
+
+    /// Adds a success toast (convenience method).
+    pub fn toast_success(&mut self, message: impl Into<String>) {
+        self.add_toast(message, ToastSeverity::Success);
+    }
+
+    /// Adds a warning toast (convenience method).
+    pub fn toast_warning(&mut self, message: impl Into<String>) {
+        self.add_toast(message, ToastSeverity::Warning);
+    }
+
+    /// Adds an error toast (convenience method).
+    pub fn toast_error(&mut self, message: impl Into<String>) {
+        self.add_toast(message, ToastSeverity::Error);
+    }
+
+    /// Removes expired toasts from the queue.
+    pub fn expire_toasts(&mut self) {
+        self.toasts
+            .retain(|toast| toast.created_at.elapsed() < TOAST_DURATION);
     }
 }
