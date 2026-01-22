@@ -4,7 +4,6 @@
 //! The UI is composed of several panels: header (status/WiFi), progress bar,
 //! temperature gauges, AMS filament status, printer controls, and a help bar.
 
-pub mod aggregate;
 mod controls;
 mod header;
 mod help;
@@ -25,6 +24,12 @@ use std::borrow::Cow;
 
 /// Maximum content width for the UI (characters)
 const MAX_CONTENT_WIDTH: u16 = 100;
+
+/// Seconds before data is considered slightly stale (yellow warning)
+const STALE_WARNING_SECS: u64 = 5;
+
+/// Seconds before data is considered critically stale (red warning)
+const STALE_CRITICAL_SECS: u64 = 30;
 
 /// Renders the main application UI with header, progress, temps, AMS, and help bar.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -114,10 +119,29 @@ pub fn render(frame: &mut Frame, app: &App) {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let last_update: Cow<'static, str> = app
+    // Determine update text and color based on staleness
+    let (last_update, update_color): (Cow<'static, str>, Color) = app
         .time_since_update()
-        .map(|d| Cow::Owned(format!("Updated {}s ago ", d.as_secs())))
-        .unwrap_or(Cow::Borrowed("No data yet "));
+        .map(|d| {
+            let secs = d.as_secs();
+            let color = if secs >= STALE_CRITICAL_SECS {
+                Color::Red
+            } else if secs >= STALE_WARNING_SECS {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            };
+            let prefix = if secs >= STALE_WARNING_SECS {
+                "\u{26A0} "
+            } else {
+                ""
+            };
+            (
+                Cow::Owned(format!("{}Updated {}s ago ", prefix, secs)),
+                color,
+            )
+        })
+        .unwrap_or((Cow::Borrowed("No data yet "), Color::DarkGray));
 
     // Left side: logo with version, quit hint, and temp toggle
     let temp_unit = if app.use_celsius { "°C" } else { "°F" };
@@ -136,12 +160,10 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(format!(" {}", temp_unit)),
     ]);
 
-    // Right side: last update time
+    // Right side: last update time with staleness indicator
     let right = Line::from(vec![Span::styled(
         last_update,
-        Style::new()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC),
+        Style::new().fg(update_color),
     )]);
 
     // Split area for left and right alignment

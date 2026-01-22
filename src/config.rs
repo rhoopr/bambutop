@@ -242,11 +242,13 @@ impl Config {
     /// Returns a reference to the slice of extra printers (excluding the primary).
     ///
     /// Use `all_printers()` to get all printers including the primary.
+    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn extra_printers(&self) -> &[PrinterConfig] {
         &self.extra_printers
     }
 
     /// Adds an extra printer to the configuration.
+    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn add_printer(&mut self, printer: PrinterConfig) {
         self.extra_printers.push(printer);
     }
@@ -256,6 +258,7 @@ impl PrinterConfig {
     /// Returns the display name for this printer.
     ///
     /// If a friendly name is set, returns that. Otherwise, returns the serial number.
+    #[allow(dead_code)] // Will be used by UI for printer selection
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.serial)
     }
