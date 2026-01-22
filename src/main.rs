@@ -13,6 +13,9 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+
+/// Maximum number of printers that can be navigated via number keys (1-9)
+const MAX_PRINTER_HOTKEYS: usize = 9;
 use mqtt::MqttClient;
 use printer::{speed_level_to_name, speed_level_to_percent};
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -346,6 +349,39 @@ async fn run_app(
                                         app.pause_pending = false;
                                     }
                                 }
+                            }
+                        }
+                        // Multi-printer navigation: Tab cycles to next printer
+                        KeyCode::Tab => {
+                            let printer_count = app.printer_count();
+                            if printer_count > 1 {
+                                let current = app.active_printer_index();
+                                let next = (current + 1) % printer_count;
+                                app.set_active_printer(next);
+                                app.toast_info(format!("Printer {}/{}", next + 1, printer_count));
+                            }
+                        }
+                        // Multi-printer navigation: Shift+Tab cycles to previous printer
+                        KeyCode::BackTab => {
+                            let printer_count = app.printer_count();
+                            if printer_count > 1 {
+                                let current = app.active_printer_index();
+                                let prev = if current == 0 {
+                                    printer_count - 1
+                                } else {
+                                    current - 1
+                                };
+                                app.set_active_printer(prev);
+                                app.toast_info(format!("Printer {}/{}", prev + 1, printer_count));
+                            }
+                        }
+                        // Multi-printer navigation: number keys 1-9 jump to printer by index
+                        KeyCode::Char(c @ '1'..='9') => {
+                            let index = (c as usize) - ('1' as usize);
+                            let printer_count = app.printer_count();
+                            if index < printer_count && index < MAX_PRINTER_HOTKEYS {
+                                app.set_active_printer(index);
+                                app.toast_info(format!("Printer {}/{}", index + 1, printer_count));
                             }
                         }
                         _ => {}
