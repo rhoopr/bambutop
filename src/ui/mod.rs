@@ -4,6 +4,7 @@
 //! The UI is composed of several panels: header (status/WiFi), progress bar,
 //! temperature gauges, AMS filament status, printer controls, and a help bar.
 
+pub mod aggregate;
 mod controls;
 mod header;
 mod progress;
