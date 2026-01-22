@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use smallvec::SmallVec;
 use std::borrow::Cow;
+use std::time::Instant;
 
 /// Special tray value indicating external spool (not in AMS).
 /// Values >= this indicate no AMS tray is active (254=external, 255=none).
@@ -213,12 +214,14 @@ pub struct LightState {
 /// - Future features (e.g., linking to Bambu error documentation by code)
 /// - Complete representation of printer error data
 #[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HmsError {
     pub code: u32,
     pub module: u8,
     pub severity: u8,
     pub message: String,
+    /// When this error was first received from the printer
+    pub received_at: Instant,
 }
 
 /// Raw MQTT message structure from Bambu printer
@@ -417,6 +420,7 @@ impl PrinterState {
 
         // HMS errors
         if let Some(hms_list) = &report.hms {
+            let now = Instant::now();
             self.hms_errors = hms_list
                 .iter()
                 .map(|h| HmsError {
@@ -424,6 +428,7 @@ impl PrinterState {
                     module: ((h.attr >> 24) & 0xFF) as u8,
                     severity: ((h.attr >> 16) & 0xFF) as u8,
                     message: format_hms_code(h.code).into_owned(),
+                    received_at: now,
                 })
                 .collect();
         }
