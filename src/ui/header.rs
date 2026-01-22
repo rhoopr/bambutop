@@ -14,6 +14,7 @@ use ratatui::{
 };
 use smallvec::SmallVec;
 use std::borrow::Cow;
+use std::time::Instant;
 
 /// Seconds before data is considered slightly stale (yellow warning)
 const STALE_WARNING_SECS: u64 = 5;
@@ -142,7 +143,10 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
             (Color::DarkGray, format!("{}s", secs))
         };
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(indicator_text, Style::new().fg(indicator_color)));
+        spans.push(Span::styled(
+            indicator_text,
+            Style::new().fg(indicator_color),
+        ));
     }
 
     let status_line = Line::from(spans);
@@ -188,9 +192,15 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
                 2 => Color::LightRed,
                 _ => Color::Red,
             };
+            let relative_time = format_relative_time(error.received_at);
             lines.push(Line::from(vec![
                 Span::raw(" "),
                 Span::styled(error.message.as_str(), Style::new().fg(severity_color)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("({})", relative_time),
+                    Style::new().fg(Color::DarkGray),
+                ),
             ]));
         }
     } else {
@@ -278,6 +288,25 @@ fn parse_dbm(s: &str) -> Option<i32> {
         Some(if negative { -result } else { result })
     } else {
         None
+    }
+}
+
+/// Formats a relative time string from an Instant.
+///
+/// Returns human-readable strings like "2m ago", "1h ago", "3d ago".
+/// For times under 60 seconds, returns "just now".
+fn format_relative_time(instant: Instant) -> String {
+    let elapsed = instant.elapsed();
+    let secs = elapsed.as_secs();
+
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
     }
 }
 
