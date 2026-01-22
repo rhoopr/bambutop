@@ -19,11 +19,38 @@ const MAX_NOZZLE_TEMP: f32 = 300.0;
 /// Maximum bed temperature for gauge scaling (when no target is set)
 const MAX_BED_TEMP: f32 = 120.0;
 
-/// Temperature threshold above which the heater is considered active
+/// Temperature threshold above which the heater is considered active (in Celsius)
 const ACTIVE_TEMP_THRESHOLD: f32 = 50.0;
 
-/// Temperature difference threshold for considering temp "at target"
+/// Temperature difference threshold for considering temp "at target" (in Celsius)
 const AT_TARGET_THRESHOLD: f32 = 5.0;
+
+/// Converts a temperature from Celsius to Fahrenheit.
+fn celsius_to_fahrenheit(celsius: f32) -> f32 {
+    celsius * 9.0 / 5.0 + 32.0
+}
+
+/// Formats a temperature value with the appropriate unit symbol.
+fn format_temp(celsius: f32, use_celsius: bool) -> String {
+    if use_celsius {
+        format!("{:.0}°C", celsius)
+    } else {
+        format!("{:.0}°F", celsius_to_fahrenheit(celsius))
+    }
+}
+
+/// Formats a temperature with target (e.g., "200°C / 210°C").
+fn format_temp_with_target(current: f32, target: f32, use_celsius: bool) -> String {
+    if use_celsius {
+        format!("{:.0}°C / {:.0}°C", current, target)
+    } else {
+        format!(
+            "{:.0}°F / {:.0}°F",
+            celsius_to_fahrenheit(current),
+            celsius_to_fahrenheit(target)
+        )
+    }
+}
 
 /// Safe chamber temperature range for a filament type.
 struct ChamberRange {
@@ -99,7 +126,7 @@ pub fn panel_height(has_chamber: bool, has_active_tray: bool) -> u16 {
 }
 
 /// Renders the temperatures panel with nozzle, bed, chamber temps and fan speeds.
-pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
+pub fn render(frame: &mut Frame, printer_state: &PrinterState, use_celsius: bool, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -173,8 +200,8 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             current: temps.nozzle,
             target: temps.nozzle_target,
             max_temp: MAX_NOZZLE_TEMP,
-            active_color: Color::Red,
         },
+        use_celsius,
         chunks[2],
         chunks[3],
     );
@@ -187,8 +214,8 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             current: temps.bed,
             target: temps.bed_target,
             max_temp: MAX_BED_TEMP,
-            active_color: Color::Magenta,
         },
+        use_celsius,
         chunks[5],
         chunks[6],
     );
@@ -199,6 +226,7 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             frame,
             temps.chamber,
             active_filament,
+            use_celsius,
             chunks[8], // Chamber text
             if active_filament.is_some() {
                 Some(chunks[9]) // Chamber gauge
@@ -217,9 +245,11 @@ fn render_chamber_display(
     frame: &mut Frame,
     chamber_temp: f32,
     filament_type: Option<&str>,
+    use_celsius: bool,
     text_area: Rect,
     gauge_area: Option<Rect>,
 ) {
+    let unit = if use_celsius { "°C" } else { "°F" };
     let (text_spans, gauge_color) = if let Some(material) = filament_type {
         let range = chamber_range_for_filament(material);
 
@@ -232,14 +262,26 @@ fn render_chamber_display(
             Color::Green // In range
         };
 
+        let (range_low, range_high) = if use_celsius {
+            (range.safe_low, range.safe_high)
+        } else {
+            (
+                celsius_to_fahrenheit(range.safe_low),
+                celsius_to_fahrenheit(range.safe_high),
+            )
+        };
+
         let spans = vec![
             Span::raw(" "),
             Span::styled("Chamber: ", Style::new().fg(Color::DarkGray)),
-            Span::styled(format!("{:.0}°C", chamber_temp), Style::new().fg(color)),
+            Span::styled(
+                format_temp(chamber_temp, use_celsius),
+                Style::new().fg(color),
+            ),
             Span::styled(
                 format!(
-                    " ({}: {:.0}-{:.0}°C)",
-                    material, range.safe_low, range.safe_high
+                    " ({}: {:.0}-{:.0}{})",
+                    material, range_low, range_high, unit
                 ),
                 Style::new().fg(Color::DarkGray),
             ),
@@ -252,7 +294,7 @@ fn render_chamber_display(
             Span::raw(" "),
             Span::styled("Chamber: ", Style::new().fg(Color::DarkGray)),
             Span::styled(
-                format!("{:.0}°C", chamber_temp),
+                format_temp(chamber_temp, use_celsius),
                 Style::new().fg(Color::Cyan),
             ),
         ];
@@ -295,30 +337,29 @@ struct TempGaugeConfig {
     target: f32,
     /// Maximum temperature for gauge scaling when no target is set
     max_temp: f32,
-    /// Color to use when temperature is above 50°C but not at target
-    active_color: Color,
 }
 
 /// Renders a temperature gauge with label and progress bar.
 fn render_temp_gauge(
     frame: &mut Frame,
     config: TempGaugeConfig,
+    use_celsius: bool,
     text_area: Rect,
     gauge_area: Rect,
 ) {
     let temp_color =
         if config.target > 0.0 && (config.current - config.target).abs() < AT_TARGET_THRESHOLD {
-            Color::Green
-        } else if config.current > ACTIVE_TEMP_THRESHOLD {
-            config.active_color
+            Color::Green // At target temperature
+        } else if config.target > 0.0 || config.current > ACTIVE_TEMP_THRESHOLD {
+            Color::Yellow // Heating or hot
         } else {
-            Color::DarkGray
+            Color::DarkGray // Cold/idle
         };
 
     let temp_value = if config.target > 0.0 {
-        format!("{:.0}°C / {:.0}°C", config.current, config.target)
+        format_temp_with_target(config.current, config.target, use_celsius)
     } else {
-        format!("{:.0}°C", config.current)
+        format_temp(config.current, use_celsius)
     };
 
     let text_line = Line::from(vec![

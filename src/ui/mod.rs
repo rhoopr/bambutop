@@ -9,6 +9,7 @@ mod header;
 mod progress;
 mod status;
 mod temps;
+mod toast;
 
 use crate::app::App;
 use ratatui::{
@@ -48,8 +49,8 @@ pub fn render(frame: &mut Frame, app: &App) {
             Constraint::Length(4),            // Header (status + system info)
             Constraint::Length(7),            // Progress (job, spacer, info, bar, spacer)
             Constraint::Length(temps_height), // Temps + AMS row (dynamic height)
-            Constraint::Length(4),            // Printer Controls
             Constraint::Min(1),               // Spacer (absorbs extra space)
+            Constraint::Length(4),            // Controls row (right-aligned)
             Constraint::Length(1),            // Help bar
         ])
         .split(content_area);
@@ -64,10 +65,40 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(37)])
         .split(chunks[2]);
 
-    temps::render(frame, &printer_state, middle_row[0]);
+    temps::render(frame, &printer_state, app.use_celsius, middle_row[0]);
     status::render_ams(frame, &printer_state, middle_row[1]);
 
-    controls::render(frame, &printer_state, chunks[3]);
+    // Toast notifications: render at bottom of spacer area, right-aligned
+    let toast_count = app.toasts.len();
+    if toast_count > 0 {
+        let spacer = chunks[3];
+        let toast_height = toast::panel_height(toast_count).min(spacer.height);
+        if toast_height > 0 {
+            let toast_area = Rect::new(
+                spacer.x,
+                spacer.y + spacer.height - toast_height,
+                spacer.width,
+                toast_height,
+            );
+            let toasts: Vec<_> = app.toasts.iter().cloned().collect();
+            toast::render(frame, &toasts, toast_area);
+        }
+    }
+
+    // Controls row: empty left half, controls on right half
+    let controls_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[4]);
+
+    controls::render(
+        frame,
+        &printer_state,
+        app.controls_locked,
+        app.cancel_pending,
+        app.pause_pending,
+        controls_row[1],
+    );
 
     render_help_bar(frame, app, chunks[5]);
 }
@@ -81,7 +112,8 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         .map(|d| Cow::Owned(format!("Updated {}s ago ", d.as_secs())))
         .unwrap_or(Cow::Borrowed("No data yet "));
 
-    // Left side: logo with version and quit hint
+    // Left side: logo with version, quit hint, and temp toggle
+    let temp_unit = if app.use_celsius { "°C" } else { "°F" };
     let left = Line::from(vec![
         Span::styled(
             format!(" BAMBUTOP v{} ", VERSION),
@@ -92,7 +124,9 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled("q", Style::new().fg(Color::Yellow)),
-        Span::raw(" Quit"),
+        Span::raw(" Quit  "),
+        Span::styled("u", Style::new().fg(Color::Yellow)),
+        Span::raw(format!(" {}", temp_unit)),
     ]);
 
     // Right side: last update time

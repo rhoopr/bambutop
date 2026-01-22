@@ -502,8 +502,9 @@ fn parse_fan_speed(s: &str) -> Option<u8> {
     let val: u8 = s.parse().ok()?;
     // Bambu uses 0-15 scale, convert to percentage
     // Cap at 15 to prevent overflow in edge cases
+    // Round to match Bambu Handy display
     let capped = val.min(15);
-    Some(((capped as f32 / 15.0) * 100.0) as u8)
+    Some(((capped as f32 / 15.0) * 100.0).round() as u8)
 }
 
 fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
@@ -628,9 +629,9 @@ mod tests {
 
         #[test]
         fn converts_mid_values() {
-            // 7/15 * 100 = 46.67, truncated to 46
-            assert_eq!(parse_fan_speed("7"), Some(46));
-            // 8/15 * 100 = 53.33, truncated to 53
+            // 7/15 * 100 = 46.67, rounded to 47
+            assert_eq!(parse_fan_speed("7"), Some(47));
+            // 8/15 * 100 = 53.33, rounded to 53
             assert_eq!(parse_fan_speed("8"), Some(53));
         }
 
@@ -965,7 +966,7 @@ mod tests {
             let msg = MqttMessage {
                 print: Some(PrintReport {
                     cooling_fan_speed: Some("15".to_string()), // Max = 100%
-                    big_fan1_speed: Some("7".to_string()),     // ~46%
+                    big_fan1_speed: Some("7".to_string()),     // 47% (rounded)
                     big_fan2_speed: Some("0".to_string()),     // 0%
                     ..Default::default()
                 }),
@@ -973,7 +974,7 @@ mod tests {
             state.update_from_message(&msg);
 
             assert_eq!(state.speeds.fan_speed, 100);
-            assert_eq!(state.speeds.aux_fan_speed, 46);
+            assert_eq!(state.speeds.aux_fan_speed, 47);
             assert_eq!(state.speeds.chamber_fan_speed, 0);
         }
 

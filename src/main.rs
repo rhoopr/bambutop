@@ -154,16 +154,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Minimum speed level (Silent)
+const SPEED_LEVEL_MIN: u8 = 1;
+/// Maximum speed level (Ludicrous)
+const SPEED_LEVEL_MAX: u8 = 4;
+
+/// Returns a display string for a speed level (e.g., "Standard (100%)").
+fn speed_level_display(level: u8) -> &'static str {
+    match level {
+        1 => "Silent (50%)",
+        2 => "Standard (100%)",
+        3 => "Sport (124%)",
+        4 => "Ludicrous (166%)",
+        _ => "Unknown",
+    }
+}
+
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     mqtt_rx: &mut tokio::sync::mpsc::Receiver<mqtt::MqttEvent>,
     tick_rate: Duration,
-    _mqtt_client: &MqttClient,
+    mqtt_client: &MqttClient,
 ) -> Result<()> {
-    // Note: _mqtt_client is passed by reference to keep the MQTT connection alive;
-    // dropping it triggers graceful shutdown of the event loop task.
     loop {
+        // Expire old toasts before rendering
+        app.expire_toasts();
+
         terminal.draw(|f| ui::render(f, app))?;
 
         // Check for MQTT events (non-blocking)
@@ -174,10 +191,154 @@ async fn run_app(
         // Check for keyboard events
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press
-                    && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                {
-                    app.should_quit = true;
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            app.should_quit = true;
+                        }
+                        KeyCode::Esc => {
+                            // Esc aborts confirmations, or quits if none pending
+                            if app.cancel_pending {
+                                app.cancel_pending = false;
+                            } else if app.pause_pending {
+                                app.pause_pending = false;
+                            } else {
+                                app.should_quit = true;
+                            }
+                        }
+                        KeyCode::Char('x') => {
+                            app.controls_locked = !app.controls_locked;
+                            // Clear confirmations when locking controls
+                            if app.controls_locked {
+                                app.cancel_pending = false;
+                                app.pause_pending = false;
+                                app.toast_info("Controls locked");
+                            } else {
+                                app.toast_info("Controls unlocked");
+                            }
+                        }
+                        KeyCode::Char('u') => {
+                            app.use_celsius = !app.use_celsius;
+                            let unit = if app.use_celsius {
+                                "Celsius"
+                            } else {
+                                "Fahrenheit"
+                            };
+                            app.toast_info(format!("Temperature: {}", unit));
+                        }
+                        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
+                            if !app.controls_locked {
+                                let current = app
+                                    .printer_state
+                                    .lock()
+                                    .expect("state lock poisoned")
+                                    .speeds
+                                    .speed_level;
+                                if current < SPEED_LEVEL_MAX {
+                                    let new_level = current + 1;
+                                    let _ = mqtt_client.set_speed_level(new_level).await;
+                                    app.toast_success(format!(
+                                        "Speed: {}",
+                                        speed_level_display(new_level)
+                                    ));
+                                }
+                            }
+                        }
+                        KeyCode::Char('-') | KeyCode::Char('[') => {
+                            if !app.controls_locked {
+                                let current = app
+                                    .printer_state
+                                    .lock()
+                                    .expect("state lock poisoned")
+                                    .speeds
+                                    .speed_level;
+                                if current > SPEED_LEVEL_MIN {
+                                    let new_level = current - 1;
+                                    let _ = mqtt_client.set_speed_level(new_level).await;
+                                    app.toast_success(format!(
+                                        "Speed: {}",
+                                        speed_level_display(new_level)
+                                    ));
+                                }
+                            }
+                        }
+                        KeyCode::Char('l') => {
+                            if !app.controls_locked {
+                                let current = app
+                                    .printer_state
+                                    .lock()
+                                    .expect("state lock poisoned")
+                                    .lights
+                                    .chamber_light;
+                                let new_state = !current;
+                                let _ = mqtt_client.set_chamber_light(new_state).await;
+                                let status = if new_state { "ON" } else { "OFF" };
+                                app.toast_success(format!("Light: {}", status));
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            if !app.controls_locked {
+                                let gcode_state = app
+                                    .printer_state
+                                    .lock()
+                                    .expect("state lock poisoned")
+                                    .print_status
+                                    .gcode_state
+                                    .clone();
+                                let has_active_job =
+                                    gcode_state == "RUNNING" || gcode_state == "PAUSE";
+                                if has_active_job {
+                                    if app.pause_pending {
+                                        // Second press - confirm pause/resume
+                                        match gcode_state.as_str() {
+                                            "RUNNING" => {
+                                                let _ = mqtt_client.pause_print().await;
+                                                app.toast_warning("Print paused");
+                                            }
+                                            "PAUSE" => {
+                                                let _ = mqtt_client.resume_print().await;
+                                                app.toast_success("Print resumed");
+                                            }
+                                            _ => {}
+                                        }
+                                        app.pause_pending = false;
+                                    } else {
+                                        // First press - request confirmation
+                                        app.pause_pending = true;
+                                        // Clear cancel confirmation if it was pending
+                                        app.cancel_pending = false;
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('c') => {
+                            if !app.controls_locked {
+                                let gcode_state = app
+                                    .printer_state
+                                    .lock()
+                                    .expect("state lock poisoned")
+                                    .print_status
+                                    .gcode_state
+                                    .clone();
+                                let has_active_job =
+                                    gcode_state == "RUNNING" || gcode_state == "PAUSE";
+                                if has_active_job {
+                                    if app.cancel_pending {
+                                        // Second press - confirm cancel
+                                        let _ = mqtt_client.stop_print().await;
+                                        app.cancel_pending = false;
+                                        app.toast_error("Print cancelled");
+                                    } else {
+                                        // First press - request confirmation
+                                        app.cancel_pending = true;
+                                        // Clear pause confirmation if it was pending
+                                        app.pause_pending = false;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }

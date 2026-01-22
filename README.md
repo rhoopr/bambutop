@@ -12,9 +12,10 @@ A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for yo
 - **Temperatures** — Nozzle, bed, and chamber with visual gauges
 - **Smart Chamber Display** — Shows safe temperature range based on active filament type (PLA, PETG, ABS, etc.)
 - **Fan Speeds** — Part cooling, auxiliary, and chamber fan percentages
-- **Printer Controls** — Current speed setting (Silent/Standard/Sport/Ludicrous)
+- **Printer Controls** — Current speed setting (Silent/Standard/Sport/Ludicrous), chamber light toggle
 - **AMS Status** — Humidity grade (A-E), filament colors, materials, and remaining percentages with active slot highlighting
 - **HMS Errors** — Health Management System notifications with severity coloring
+- **Toast Notifications** — Brief feedback messages when commands succeed or fail
 
 ## Supported Printers
 
@@ -72,6 +73,12 @@ You'll need three pieces of information from your printer:
 
 | Key | Action |
 |-----|--------|
+| `x` | Toggle controls lock/unlock |
+| `+` / `-` | Adjust print speed (Silent/Standard/Sport/Ludicrous) |
+| `l` | Toggle chamber light |
+| `Space` | Pause/resume print (requires confirmation) |
+| `c` | Cancel print (requires confirmation) |
+| `u` | Toggle temperature unit (Celsius/Fahrenheit) |
 | `q` or `Esc` | Quit |
 
 ## Command-Line Options
