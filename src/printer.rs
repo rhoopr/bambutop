@@ -5,6 +5,39 @@ use std::borrow::Cow;
 /// Values >= this indicate no AMS tray is active (254=external, 255=none).
 const TRAY_EXTERNAL_SPOOL: u8 = 254;
 
+/// Speed level percentages for Bambu printers.
+/// Levels: 1=silent, 2=standard, 3=sport, 4=ludicrous
+const SPEED_SILENT: u32 = 50;
+const SPEED_STANDARD: u32 = 100;
+const SPEED_SPORT: u32 = 124;
+const SPEED_LUDICROUS: u32 = 166;
+
+/// Converts Bambu speed level (1-4) to its display name.
+///
+/// Returns "Standard" for unknown levels as a safe default.
+pub fn speed_level_to_name(level: u8) -> &'static str {
+    match level {
+        1 => "Silent",
+        2 => "Standard",
+        3 => "Sport",
+        4 => "Ludicrous",
+        _ => "Standard",
+    }
+}
+
+/// Converts Bambu speed level (1-4) to percentage.
+///
+/// Returns 100% (Standard) for unknown levels as a safe default.
+pub fn speed_level_to_percent(level: u8) -> u32 {
+    match level {
+        1 => SPEED_SILENT,
+        2 => SPEED_STANDARD,
+        3 => SPEED_SPORT,
+        4 => SPEED_LUDICROUS,
+        _ => SPEED_STANDARD,
+    }
+}
+
 /// Main printer state aggregated from MQTT messages.
 ///
 /// This struct is incrementally updated from partial MQTT messages
@@ -613,6 +646,44 @@ fn model_from_serial(serial: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod speed_level_to_percent_tests {
+        use super::*;
+
+        #[test]
+        fn converts_known_speed_levels() {
+            assert_eq!(speed_level_to_percent(1), 50); // Silent
+            assert_eq!(speed_level_to_percent(2), 100); // Standard
+            assert_eq!(speed_level_to_percent(3), 124); // Sport
+            assert_eq!(speed_level_to_percent(4), 166); // Ludicrous
+        }
+
+        #[test]
+        fn defaults_unknown_levels_to_standard() {
+            assert_eq!(speed_level_to_percent(0), 100);
+            assert_eq!(speed_level_to_percent(5), 100);
+            assert_eq!(speed_level_to_percent(255), 100);
+        }
+    }
+
+    mod speed_level_to_name_tests {
+        use super::*;
+
+        #[test]
+        fn converts_known_speed_levels() {
+            assert_eq!(speed_level_to_name(1), "Silent");
+            assert_eq!(speed_level_to_name(2), "Standard");
+            assert_eq!(speed_level_to_name(3), "Sport");
+            assert_eq!(speed_level_to_name(4), "Ludicrous");
+        }
+
+        #[test]
+        fn defaults_unknown_levels_to_standard() {
+            assert_eq!(speed_level_to_name(0), "Standard");
+            assert_eq!(speed_level_to_name(5), "Standard");
+            assert_eq!(speed_level_to_name(255), "Standard");
+        }
+    }
 
     mod parse_fan_speed_tests {
         use super::*;
