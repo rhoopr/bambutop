@@ -113,12 +113,36 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
 }
 
 /// Truncates a string to a maximum length, adding "..." if truncated.
+/// If the string appears to be a filename with an extension, truncates from the middle
+/// to preserve the extension (e.g., "my_very_lo...model.3mf").
 /// Returns `Cow::Borrowed` when no truncation is needed to avoid allocation.
 fn truncate_str(s: &str, max_len: usize) -> Cow<'_, str> {
     if s.len() <= max_len {
         return Cow::Borrowed(s);
     }
 
+    // Check for file extension (last '.' not at the start)
+    if let Some(dot_pos) = s.rfind('.') {
+        // Only treat as extension if it's not at the start and extension is reasonable length
+        if dot_pos > 0 && s.len() - dot_pos <= 10 {
+            let extension = &s[dot_pos..];
+            let prefix_budget = max_len.saturating_sub(3).saturating_sub(extension.len());
+
+            if prefix_budget > 0 {
+                // Find a valid char boundary for the prefix
+                let mut end = prefix_budget.min(s.len());
+                while end > 0 && !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+
+                if end > 0 {
+                    return Cow::Owned(format!("{}...{}", &s[..end], extension));
+                }
+            }
+        }
+    }
+
+    // Fallback: truncate from end (no extension or not enough space)
     let target_len = max_len.saturating_sub(3);
     let mut end = target_len.min(s.len());
 
@@ -152,6 +176,73 @@ fn format_time(mins: u32) -> Cow<'static, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod truncate_str_tests {
+        use super::*;
+
+        #[test]
+        fn returns_borrowed_when_short_enough() {
+            let result = truncate_str("short.txt", 20);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "short.txt");
+        }
+
+        #[test]
+        fn truncates_from_middle_preserving_extension() {
+            let result = truncate_str("my_very_long_filename_model.3mf", 25);
+            // 25 - 3 (ellipsis) - 4 (.3mf) = 18 chars for prefix
+            assert_eq!(result, "my_very_long_filen....3mf");
+        }
+
+        #[test]
+        fn preserves_longer_extension() {
+            let result = truncate_str("my_very_long_filename.gcode", 20);
+            // 20 - 3 (ellipsis) - 6 (.gcode) = 11 chars for prefix
+            assert_eq!(result, "my_very_lon....gcode");
+        }
+
+        #[test]
+        fn handles_short_name_with_extension() {
+            let result = truncate_str("test.3mf", 20);
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "test.3mf");
+        }
+
+        #[test]
+        fn truncates_from_end_when_no_extension() {
+            let result = truncate_str("my_very_long_filename_without_ext", 20);
+            assert_eq!(result, "my_very_long_file...");
+        }
+
+        #[test]
+        fn handles_extension_at_start_as_no_extension() {
+            let result = truncate_str(".hidden_very_long_file_name", 15);
+            // Dot at start means no extension, truncate from end
+            assert_eq!(result, ".hidden_very...");
+        }
+
+        #[test]
+        fn handles_very_long_extension() {
+            // Extensions longer than 10 chars are treated as not extensions
+            let result = truncate_str("filename.verylongextension", 20);
+            // 20 - 3 = 17 chars from start + ellipsis
+            assert_eq!(result, "filename.verylong...");
+        }
+
+        #[test]
+        fn handles_multiple_dots() {
+            let result = truncate_str("my_model.v2.final.3mf", 18);
+            // Should preserve ".3mf" as the extension
+            // 18 - 3 (ellipsis) - 4 (.3mf) = 11 chars for prefix
+            assert_eq!(result, "my_model.v2....3mf");
+        }
+
+        #[test]
+        fn returns_ellipsis_for_very_short_max() {
+            let result = truncate_str("test.3mf", 3);
+            assert_eq!(result, "...");
+        }
+    }
 
     mod format_time_tests {
         use super::*;
