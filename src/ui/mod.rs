@@ -28,10 +28,10 @@ use std::borrow::Cow;
 const MAX_CONTENT_WIDTH: u16 = 100;
 
 /// Seconds before data is considered slightly stale (yellow warning)
-const STALE_WARNING_SECS: u64 = 5;
+pub(crate) const STALE_WARNING_SECS: u64 = 5;
 
 /// Seconds before data is considered critically stale (red warning)
-const STALE_CRITICAL_SECS: u64 = 30;
+pub(crate) const STALE_CRITICAL_SECS: u64 = 30;
 
 /// Renders the main application UI.
 ///

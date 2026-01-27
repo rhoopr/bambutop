@@ -7,6 +7,7 @@ use super::common::{
     extract_serial_suffix, format_compact_title, gcode_state_to_status, parse_dbm,
     WIFI_MEDIUM_THRESHOLD, WIFI_STRONG_THRESHOLD,
 };
+use super::{STALE_CRITICAL_SECS, STALE_WARNING_SECS};
 use crate::app::App;
 use crate::printer::PrinterState;
 use ratatui::{
@@ -278,8 +279,8 @@ fn render_info_row(
     };
 
     let update_color = match last_update {
-        Some(t) if t.elapsed().as_secs() < 5 => Color::DarkGray,
-        Some(t) if t.elapsed().as_secs() < 30 => Color::Yellow,
+        Some(t) if t.elapsed().as_secs() < STALE_WARNING_SECS => Color::DarkGray,
+        Some(t) if t.elapsed().as_secs() < STALE_CRITICAL_SECS => Color::Yellow,
         Some(_) => Color::Red,
         None => Color::DarkGray,
     };
