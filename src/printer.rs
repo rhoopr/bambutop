@@ -1,3 +1,10 @@
+//! Printer state model and MQTT message deserialization.
+//!
+//! Defines the core [`PrinterState`] struct and related types for tracking
+//! printer status, temperatures, print progress, AMS state, and HMS errors.
+//! State is incrementally updated from partial MQTT JSON messages via
+//! [`PrinterState::update_from_message`].
+
 use serde::Deserialize;
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -6,6 +13,21 @@ use std::time::Instant;
 /// Special tray value indicating external spool (not in AMS).
 /// Values >= this indicate no AMS tray is active (254=external, 255=none).
 const TRAY_EXTERNAL_SPOOL: u8 = 254;
+
+/// Bit shift to extract the module ID from an HMS attr field.
+const HMS_MODULE_SHIFT: u32 = 24;
+/// Bit shift to extract the severity from an HMS attr field.
+const HMS_SEVERITY_SHIFT: u32 = 16;
+/// Byte mask for extracting 8-bit HMS fields.
+const HMS_BYTE_MASK: u32 = 0xFF;
+
+/// Number of tray slots per AMS unit.
+const AMS_TRAYS_PER_UNIT: u8 = 4;
+
+/// Maximum fan speed value in Bambu's 0-15 scale.
+const BAMBU_FAN_SCALE_MAX: u32 = 15;
+/// Percentage scale maximum.
+const PERCENT_MAX: u32 = 100;
 
 /// Speed level percentages for Bambu printers.
 /// Levels: 1=silent, 2=standard, 3=sport, 4=ludicrous
@@ -37,6 +59,31 @@ pub fn speed_level_to_percent(level: u8) -> u32 {
         3 => SPEED_SPORT,
         4 => SPEED_LUDICROUS,
         _ => SPEED_STANDARD,
+    }
+}
+
+/// Bitflags tracking which optional fields the printer has reported via MQTT.
+///
+/// Used for data-driven capability detection: instead of hardcoding model
+/// names, we track what the printer actually sends. Fields that are never
+/// received are hidden from the UI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReceivedFields(u16);
+
+impl ReceivedFields {
+    const HEATBREAK_FAN: u16 = 1 << 1;
+    const XCAM: u16 = 1 << 2;
+    const IPCAM: u16 = 1 << 3;
+    const WORK_LIGHT: u16 = 1 << 4;
+    const AUX_FAN: u16 = 1 << 5;
+    const CHAMBER_FAN: u16 = 1 << 6;
+
+    fn set(&mut self, flag: u16) {
+        self.0 |= flag;
+    }
+
+    fn has(self, flag: u16) -> bool {
+        self.0 & flag != 0
     }
 }
 
@@ -72,6 +119,23 @@ pub struct PrinterState {
     /// Whether HMS data has been received from the printer.
     /// Used to distinguish "no data yet" from "no errors".
     pub hms_received: bool,
+    /// Firmware version string (e.g., "01.08.02.00")
+    pub firmware_version: String,
+    /// Hardware version string
+    pub hardware_version: String,
+    /// Nozzle diameter in mm (e.g., "0.4")
+    pub nozzle_diameter: String,
+    /// Heatbreak fan speed percentage (0-100)
+    pub heatbreak_fan_speed: u8,
+    /// Unix timestamp when current gcode started
+    pub gcode_start_time: Option<u64>,
+    /// Xcam monitoring state
+    pub xcam: XcamState,
+    /// IP camera state
+    pub ipcam: IpcamState,
+    /// Tracks which optional fields the printer has reported.
+    /// Used for data-driven capability detection in the UI.
+    pub received: ReceivedFields,
 }
 
 /// Temperature threshold (in degrees C) below target that indicates heating is in progress.
@@ -92,6 +156,42 @@ pub struct PrintStatus {
     pub print_type: String,
     /// Current print stage code from printer (stg_cur field)
     pub stage_code: i32,
+}
+
+/// Printer stage codes from `stg_cur` MQTT field.
+mod stage {
+    /// Auto bed leveling
+    pub const AUTO_LEVELING: i32 = 1;
+    /// Heatbed preheating
+    pub const HEATBED_PREHEATING: i32 = 2;
+    /// Sweeping XY mech mode (nozzle heating phase)
+    pub const SWEEPING_XY: i32 = 7;
+    /// Calibrating extrusion
+    pub const CALIBRATING_EXTRUSION: i32 = 8;
+    /// Changing filament / AMS operation
+    pub const CHANGING_FILAMENT: i32 = 10;
+    /// M400 pause (user-commanded pause)
+    pub const M400_PAUSE: i32 = 11;
+    /// Filament runout pause
+    pub const FILAMENT_RUNOUT_PAUSE: i32 = 12;
+    /// Homing axes
+    pub const HOMING: i32 = 13;
+    /// Cleaning nozzle tip
+    pub const CLEANING_NOZZLE: i32 = 14;
+    /// Reserved / not commonly seen
+    pub const RESERVED_15: i32 = 15;
+    /// User paused
+    pub const USER_PAUSED: i32 = 16;
+    /// Bed scan (bed mesh calibration)
+    pub const BED_SCAN: i32 = 17;
+    /// First layer inspection
+    pub const FIRST_LAYER_INSPECT: i32 = 18;
+    /// Idle (between operations)
+    pub const INTER_IDLE: i32 = 19;
+    /// Bed leveling in print
+    pub const BED_LEVELING_IN_PRINT: i32 = 20;
+    /// Extruder scanning
+    pub const EXTRUDER_SCAN: i32 = 21;
 }
 
 impl PrintStatus {
@@ -198,23 +298,29 @@ impl PrintStatus {
         // 21 = Paused due to heat bed temperature malfunction
         // -1 = Idle (no stage), actual printing uses stage_code 0 with progress > 0
         match self.stage_code {
-            1 => return Some("Auto-Leveling"),
-            2 => return Some("Heating Bed"),
-            7 => return Some("Heating Nozzle"),
-            8 | 19 => return Some("Calibrating Extrusion"),
+            stage::AUTO_LEVELING => return Some("Auto-Leveling"),
+            stage::HEATBED_PREHEATING => return Some("Heating Bed"),
+            stage::SWEEPING_XY => return Some("Heating Nozzle"),
+            stage::CALIBRATING_EXTRUSION | stage::INTER_IDLE => {
+                return Some("Calibrating Extrusion");
+            }
             9 => return Some("Scanning Bed"),
-            10 => return Some("Inspecting First Layer"),
-            11 => return Some("Identifying Build Plate"),
-            12 | 18 => return Some("Calibrating Lidar"),
-            13 => return Some("Homing"),
-            14 => return Some("Cleaning Nozzle"),
-            15 => return Some("Checking Temperature"),
+            stage::CHANGING_FILAMENT => return Some("Inspecting First Layer"),
+            stage::M400_PAUSE => return Some("Identifying Build Plate"),
+            stage::FILAMENT_RUNOUT_PAUSE | stage::FIRST_LAYER_INSPECT => {
+                return Some("Calibrating Lidar");
+            }
+            stage::HOMING => return Some("Homing"),
+            stage::CLEANING_NOZZLE => return Some("Cleaning Nozzle"),
+            stage::RESERVED_15 => return Some("Checking Temperature"),
             4 => return Some("Changing Filament"),
-            5 | 16 => return Some("Paused"),
+            5 | stage::USER_PAUSED => return Some("Paused"),
             6 => return Some("Filament Runout"),
             3 => return Some("Sweeping XY"),
-            17 => return Some("Cover Open"),
-            20 | 21 => return Some("Temperature Error"),
+            stage::BED_SCAN => return Some("Cover Open"),
+            stage::BED_LEVELING_IN_PRINT | stage::EXTRUDER_SCAN => {
+                return Some("Temperature Error");
+            }
             _ => {}
         }
 
@@ -287,6 +393,12 @@ pub struct AmsTray {
     pub remaining: u8,
     /// Pre-parsed RGB color values (r, g, b) for efficient rendering
     pub parsed_color: Option<(u8, u8, u8)>,
+    /// Filament sub-brand (e.g., "Bambu PLA Basic")
+    pub sub_brand: String,
+    /// Recommended minimum nozzle temperature
+    pub nozzle_temp_min: Option<i32>,
+    /// Recommended maximum nozzle temperature
+    pub nozzle_temp_max: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -301,7 +413,7 @@ pub struct LightState {
 /// - Debugging via the derived `Debug` impl
 /// - Future features (e.g., linking to Bambu error documentation by code)
 /// - Complete representation of printer error data
-#[allow(dead_code)]
+#[allow(dead_code)] // `module` field retained for Debug output and tests
 #[derive(Debug, Clone)]
 pub struct HmsError {
     pub code: u32,
@@ -312,10 +424,49 @@ pub struct HmsError {
     pub received_at: Instant,
 }
 
+/// Xcam (AI monitoring) state from the printer.
+#[derive(Debug, Clone, Default)]
+pub struct XcamState {
+    /// Whether spaghetti detection is enabled
+    pub spaghetti_detector: bool,
+    /// Whether first layer inspection is enabled
+    pub first_layer_inspector: bool,
+    /// Whether to halt print on detection
+    pub print_halt: bool,
+}
+
+/// IP camera and timelapse state.
+#[derive(Debug, Clone, Default)]
+pub struct IpcamState {
+    /// Whether the camera is recording
+    pub recording: bool,
+    /// Whether timelapse is enabled
+    pub timelapse: bool,
+    /// Camera resolution (e.g., "1080p")
+    pub resolution: String,
+}
+
 /// Raw MQTT message structure from Bambu printer
 #[derive(Debug, Deserialize)]
 pub struct MqttMessage {
     pub print: Option<PrintReport>,
+    pub info: Option<InfoReport>,
+}
+
+/// Info report from MQTT containing version and module information.
+///
+/// Sent in response to a `get_version` info request.
+#[derive(Debug, Deserialize)]
+pub struct InfoReport {
+    pub module: Option<Vec<InfoModule>>,
+}
+
+/// A single module entry from the info report.
+#[derive(Debug, Deserialize)]
+pub struct InfoModule {
+    pub name: Option<String>,
+    pub sw_ver: Option<String>,
+    pub hw_ver: Option<String>,
 }
 
 /// Raw print report from MQTT containing all fields sent by the printer.
@@ -324,7 +475,7 @@ pub struct MqttMessage {
 /// - Documentation of the full Bambu MQTT protocol
 /// - Future feature development without re-discovering field names
 /// - Serde deserialization (unknown fields would otherwise cause errors)
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields deserialized from MQTT JSON but not all read from Rust
 #[derive(Debug, Default, Deserialize)]
 pub struct PrintReport {
     // Print job info
@@ -374,6 +525,11 @@ pub struct PrintReport {
     pub machine_name: Option<String>,
     pub hw_ver: Option<String>,
     pub sw_ver: Option<String>,
+    pub nozzle_diameter: Option<String>,
+    pub heatbreak_fan_speed: Option<serde_json::Value>,
+    pub gcode_start_time: Option<serde_json::Value>,
+    pub xcam: Option<XcamReport>,
+    pub ipcam: Option<IpcamReport>,
 
     // HMS errors
     pub hms: Option<Vec<HmsReport>>,
@@ -398,12 +554,15 @@ pub struct AmsUnitReport {
     pub tray: Option<Vec<AmsTrayReport>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct AmsTrayReport {
     pub id: String,
     pub tray_type: Option<String>,
     pub tray_color: Option<String>,
     pub remain: Option<i32>,
+    pub tray_sub_brands: Option<String>,
+    pub nozzle_temp_min: Option<String>,
+    pub nozzle_temp_max: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,10 +571,103 @@ pub struct HmsReport {
     pub code: u32,
 }
 
+/// Xcam report from MQTT. Bambu printers send xcam fields inconsistently
+/// (booleans as strings, ints, or actual bools), so we accept any JSON value
+/// and parse manually. Unknown fields are ignored.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct XcamReport {
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    pub first_layer_inspector: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    pub print_halt: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
+    pub spaghetti_detector: Option<bool>,
+}
+
+/// IP camera report from MQTT. Unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+pub struct IpcamReport {
+    pub ipcam_record: Option<String>,
+    pub timelapse: Option<String>,
+    pub resolution: Option<String>,
+}
+
+/// Deserializes a bool that may arrive as bool, integer, or string from MQTT.
+fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct BoolVisitor;
+
+    impl<'de> de::Visitor<'de> for BoolVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a bool, integer, or string")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v != 0))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v != 0))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            match v {
+                "true" | "1" | "enable" => Ok(Some(true)),
+                "false" | "0" | "disable" => Ok(Some(false)),
+                _ => Ok(None),
+            }
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(BoolVisitor)
+}
+
 impl PrinterState {
     pub fn update_from_message(&mut self, msg: &MqttMessage) {
         if let Some(print) = &msg.print {
             self.update_from_print_report(print);
+        }
+        if let Some(info) = &msg.info {
+            self.update_from_info_report(info);
+        }
+    }
+
+    /// Extracts firmware and hardware versions from the info report.
+    ///
+    /// The "ota" module contains the main firmware version.
+    fn update_from_info_report(&mut self, report: &InfoReport) {
+        if let Some(modules) = &report.module {
+            for module in modules {
+                let is_ota = module.name.as_deref().is_some_and(|n| n == "ota");
+                if is_ota {
+                    if let Some(v) = &module.sw_ver {
+                        self.firmware_version.clone_from(v);
+                    }
+                    if let Some(v) = &module.hw_ver {
+                        self.hardware_version.clone_from(v);
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -484,11 +736,13 @@ impl PrinterState {
         if let Some(v) = &report.big_fan1_speed {
             if let Some(speed) = parse_fan_speed(v) {
                 self.speeds.aux_fan_speed = speed;
+                self.received.set(ReceivedFields::AUX_FAN);
             }
         }
         if let Some(v) = &report.big_fan2_speed {
             if let Some(speed) = parse_fan_speed(v) {
                 self.speeds.chamber_fan_speed = speed;
+                self.received.set(ReceivedFields::CHAMBER_FAN);
             }
         }
 
@@ -497,7 +751,10 @@ impl PrinterState {
             for light in lights {
                 match light.node.as_str() {
                     "chamber_light" => self.lights.chamber_light = light.mode == "on",
-                    "work_light" => self.lights.work_light = light.mode == "on",
+                    "work_light" => {
+                        self.lights.work_light = light.mode == "on";
+                        self.received.set(ReceivedFields::WORK_LIGHT);
+                    }
                     _ => {}
                 }
             }
@@ -521,8 +778,8 @@ impl PrinterState {
                 .iter()
                 .map(|h| HmsError {
                     code: h.code,
-                    module: ((h.attr >> 24) & 0xFF) as u8,
-                    severity: ((h.attr >> 16) & 0xFF) as u8,
+                    module: ((h.attr >> HMS_MODULE_SHIFT) & HMS_BYTE_MASK) as u8,
+                    severity: ((h.attr >> HMS_SEVERITY_SHIFT) & HMS_BYTE_MASK) as u8,
                     message: format_hms_code(h.code).into_owned(),
                     received_at: now,
                 })
@@ -532,6 +789,73 @@ impl PrinterState {
         // Printer info
         if let Some(v) = &report.machine_name {
             self.printer_name.clone_from(v);
+        }
+
+        // Firmware/hardware versions
+        if let Some(v) = &report.hw_ver {
+            self.hardware_version.clone_from(v);
+        }
+        if let Some(v) = &report.sw_ver {
+            self.firmware_version.clone_from(v);
+        }
+
+        // Nozzle diameter
+        if let Some(v) = &report.nozzle_diameter {
+            self.nozzle_diameter.clone_from(v);
+        }
+
+        // Heatbreak fan speed (can be string or number)
+        if let Some(v) = &report.heatbreak_fan_speed {
+            let speed_str = v
+                .as_str()
+                .map(String::from)
+                .or_else(|| v.as_u64().map(|n| n.to_string()));
+            if let Some(ref s) = speed_str {
+                if let Some(speed) = parse_fan_speed(s) {
+                    self.heatbreak_fan_speed = speed;
+                    self.received.set(ReceivedFields::HEATBREAK_FAN);
+                }
+            }
+        }
+
+        // Gcode start time (can be number or string)
+        if let Some(v) = &report.gcode_start_time {
+            let ts = v
+                .as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()));
+            if let Some(ts) = ts {
+                if ts > 0 {
+                    self.gcode_start_time = Some(ts);
+                }
+            }
+        }
+
+        // Xcam monitoring
+        if let Some(xcam) = &report.xcam {
+            self.received.set(ReceivedFields::XCAM);
+            if let Some(v) = xcam.spaghetti_detector {
+                self.xcam.spaghetti_detector = v;
+            }
+            if let Some(v) = xcam.first_layer_inspector {
+                self.xcam.first_layer_inspector = v;
+            }
+            if let Some(v) = xcam.print_halt {
+                self.xcam.print_halt = v;
+            }
+        }
+
+        // IP camera
+        if let Some(ipcam) = &report.ipcam {
+            self.received.set(ReceivedFields::IPCAM);
+            if let Some(v) = &ipcam.ipcam_record {
+                self.ipcam.recording = v == "enable";
+            }
+            if let Some(v) = &ipcam.timelapse {
+                self.ipcam.timelapse = v == "enable";
+            }
+            if let Some(v) = &ipcam.resolution {
+                self.ipcam.resolution.clone_from(v);
+            }
         }
     }
 
@@ -568,17 +892,43 @@ impl PrinterState {
         }
     }
 
-    /// Returns true if this printer model has a chamber temperature sensor.
-    /// X1 series, P2S, and H2 series have sensors.
-    /// P1P, P1S, A1, and A1 Mini do not.
+    /// Returns true if the printer model has a chamber temperature sensor.
+    ///
+    /// Only enclosed printers (X1, P1, P2, H2 series) have real chamber sensors.
+    /// Open-frame printers (A1 series) report ambient noise values via MQTT
+    /// and should not display chamber temperature.
     pub fn has_chamber_temp_sensor(&self) -> bool {
-        let model = self.printer_model.to_uppercase();
-        model.contains("X1C")
-            || model.contains("X1E")
-            || model.contains("P2S")
-            || model.contains("H2C")
-            || model.contains("H2S")
-            || model.contains("H2D")
+        model_has_chamber(&self.printer_model)
+    }
+
+    /// Returns true if the printer has reported heatbreak fan speed data.
+    pub fn has_heatbreak_fan(&self) -> bool {
+        self.received.has(ReceivedFields::HEATBREAK_FAN)
+    }
+
+    /// Returns true if the printer has reported xcam (AI monitoring) data.
+    pub fn has_xcam(&self) -> bool {
+        self.received.has(ReceivedFields::XCAM)
+    }
+
+    /// Returns true if the printer has reported IP camera data.
+    pub fn has_ipcam(&self) -> bool {
+        self.received.has(ReceivedFields::IPCAM)
+    }
+
+    /// Returns true if the printer has reported a work light.
+    pub fn has_work_light(&self) -> bool {
+        self.received.has(ReceivedFields::WORK_LIGHT)
+    }
+
+    /// Returns true if the printer has reported aux fan speed data.
+    pub fn has_aux_fan(&self) -> bool {
+        self.received.has(ReceivedFields::AUX_FAN)
+    }
+
+    /// Returns true if the printer has reported chamber fan speed data.
+    pub fn has_chamber_fan(&self) -> bool {
+        self.received.has(ReceivedFields::CHAMBER_FAN)
     }
 
     fn update_ams(&mut self, report: &AmsReport) {
@@ -592,8 +942,8 @@ impl PrinterState {
             if let Ok(tray_val) = tray.parse::<u8>() {
                 if tray_val < TRAY_EXTERNAL_SPOOL {
                     // Calculate unit and slot from combined tray value
-                    ams_state.current_unit = Some(tray_val / 4);
-                    ams_state.current_tray = Some(tray_val % 4);
+                    ams_state.current_unit = Some(tray_val / AMS_TRAYS_PER_UNIT);
+                    ams_state.current_tray = Some(tray_val % AMS_TRAYS_PER_UNIT);
                 } else {
                     // External spool (254) or no selection (255)
                     ams_state.current_unit = None;
@@ -619,6 +969,15 @@ impl PrinterState {
                                         material: t.tray_type.clone().unwrap_or_default(),
                                         remaining: t.remain.unwrap_or(0).max(0) as u8,
                                         parsed_color: parse_hex_color(color_str),
+                                        sub_brand: t.tray_sub_brands.clone().unwrap_or_default(),
+                                        nozzle_temp_min: t
+                                            .nozzle_temp_min
+                                            .as_deref()
+                                            .and_then(|s| s.parse().ok()),
+                                        nozzle_temp_max: t
+                                            .nozzle_temp_max
+                                            .as_deref()
+                                            .and_then(|s| s.parse().ok()),
                                     }
                                 })
                                 .collect()
@@ -648,12 +1007,12 @@ impl PrinterState {
 /// Returns `None` if the string cannot be parsed as a valid number.
 /// Valid input: "0" to "15" representing the Bambu fan speed scale.
 fn parse_fan_speed(s: &str) -> Option<u8> {
-    let val: u8 = s.parse().ok()?;
+    let val: u32 = s.parse().ok()?;
     // Bambu uses 0-15 scale, convert to percentage
-    // Cap at 15 to prevent overflow in edge cases
+    // Cap at max to prevent overflow in edge cases
     // Round to match Bambu Handy display
-    let capped = val.min(15);
-    Some(((capped as f32 / 15.0) * 100.0).round() as u8)
+    let capped = val.min(BAMBU_FAN_SCALE_MAX);
+    Some(((capped as f32 / BAMBU_FAN_SCALE_MAX as f32) * PERCENT_MAX as f32).round() as u8)
 }
 
 fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
@@ -726,7 +1085,7 @@ fn format_hms_code(code: u32) -> Cow<'static, str> {
         0x0800_0400 => Cow::Borrowed("System: Front cover removed"),
 
         // Fallback for unknown codes
-        _ => Cow::Owned(format!("Error: 0x{:08X}", code)),
+        _ => Cow::Borrowed("See wiki.bambulab.com"),
     }
 }
 
@@ -757,6 +1116,28 @@ fn model_from_serial(serial: &str) -> &'static str {
         "239" => "Bambu Lab H2D Pro",
         _ => "Bambu Printer",
     }
+}
+
+/// Returns true if the printer model has a chamber temperature sensor.
+///
+/// Only certain models have a real sensor:
+/// - X1 series: sensor on the button board
+/// - P2S: NTC sensor in the front beam
+/// - H2 series: active chamber heating with sensor
+///
+/// The P1S/P1P have a chamber regulator fan but no temperature sensor.
+/// Open-frame printers (A1 series) report ambient noise via `chamber_temper`.
+fn model_has_chamber(model: &str) -> bool {
+    matches!(
+        model,
+        "Bambu Lab X1C"
+            | "Bambu Lab X1E"
+            | "Bambu Lab P2S"
+            | "Bambu Lab H2C"
+            | "Bambu Lab H2S"
+            | "Bambu Lab H2D"
+            | "Bambu Lab H2D Pro"
+    )
 }
 
 #[cfg(test)]
@@ -899,10 +1280,10 @@ mod tests {
         }
 
         #[test]
-        fn returns_owned_for_unknown_codes() {
+        fn returns_borrowed_for_unknown_codes() {
             let result = format_hms_code(0x9999_9999);
-            assert!(matches!(result, Cow::Owned(_)));
-            assert_eq!(result, "Error: 0x99999999");
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "See wiki.bambulab.com");
         }
 
         #[test]
@@ -1085,6 +1466,7 @@ mod tests {
                     progress: Some(50),
                     ..Default::default()
                 }),
+                info: None,
             };
             state.update_from_message(&msg);
 
@@ -1108,6 +1490,7 @@ mod tests {
                     chamber_temper: Some(35.0),
                     ..Default::default()
                 }),
+                info: None,
             };
             state.update_from_message(&msg);
 
@@ -1134,6 +1517,7 @@ mod tests {
                     print_type: Some("local".to_string()),
                     ..Default::default()
                 }),
+                info: None,
             };
             state.update_from_message(&msg);
 
@@ -1158,6 +1542,7 @@ mod tests {
                     big_fan2_speed: Some("0".to_string()),     // 0%
                     ..Default::default()
                 }),
+                info: None,
             };
             state.update_from_message(&msg);
 
@@ -1184,6 +1569,7 @@ mod tests {
                     ]),
                     ..Default::default()
                 }),
+                info: None,
             };
             state.update_from_message(&msg);
 
@@ -1212,6 +1598,7 @@ mod tests {
                     ]),
                     ..Default::default()
                 }),
+                info: None,
             };
             state.update_from_message(&msg);
 
@@ -1222,7 +1609,7 @@ mod tests {
             assert_eq!(state.hms_errors[0].message, "AMS: Filament runout");
             assert_eq!(state.hms_errors[1].module, 2);
             assert_eq!(state.hms_errors[1].severity, 1);
-            assert_eq!(state.hms_errors[1].message, "Error: 0x99999999");
+            assert_eq!(state.hms_errors[1].message, "See wiki.bambulab.com");
         }
 
         #[test]
@@ -1230,7 +1617,10 @@ mod tests {
             let mut state = PrinterState::default();
             state.print_status.progress = 50;
 
-            let msg = MqttMessage { print: None };
+            let msg = MqttMessage {
+                print: None,
+                info: None,
+            };
             state.update_from_message(&msg);
 
             // State should be unchanged
@@ -1324,12 +1714,14 @@ mod tests {
                             tray_type: Some("PLA".to_string()),
                             tray_color: Some("FF0000".to_string()),
                             remain: Some(85),
+                            ..Default::default()
                         },
                         AmsTrayReport {
                             id: "1".to_string(),
                             tray_type: Some("PETG".to_string()),
                             tray_color: Some("#00FF00".to_string()),
                             remain: Some(50),
+                            ..Default::default()
                         },
                     ]),
                 }]),
@@ -1370,12 +1762,14 @@ mod tests {
                             tray_type: Some("PLA".to_string()),
                             tray_color: None,
                             remain: Some(100),
+                            ..Default::default()
                         },
                         AmsTrayReport {
                             id: "1".to_string(),
                             tray_type: Some("PLA".to_string()),
                             tray_color: None,
                             remain: Some(100),
+                            ..Default::default()
                         },
                     ]),
                 }]),
@@ -1400,27 +1794,19 @@ mod tests {
                     tray: Some(vec![
                         AmsTrayReport {
                             id: "0".to_string(),
-                            tray_type: None,
-                            tray_color: None,
-                            remain: None,
+                            ..Default::default()
                         },
                         AmsTrayReport {
                             id: "1".to_string(),
-                            tray_type: None,
-                            tray_color: None,
-                            remain: None,
+                            ..Default::default()
                         },
                         AmsTrayReport {
                             id: "2".to_string(),
-                            tray_type: None,
-                            tray_color: None,
-                            remain: None,
+                            ..Default::default()
                         },
                         AmsTrayReport {
                             id: "3".to_string(),
-                            tray_type: None,
-                            tray_color: None,
-                            remain: None,
+                            ..Default::default()
                         },
                     ]),
                 }]),
@@ -1447,6 +1833,7 @@ mod tests {
                         tray_type: Some("PLA".to_string()),
                         tray_color: None,
                         remain: Some(-1),
+                        ..Default::default()
                     }]),
                 }]),
             };
@@ -1476,9 +1863,13 @@ mod tests {
                         humidity: 4,
                         trays: smallvec![AmsTray {
                             id: 0,
+
                             material: "PLA".to_string(),
                             remaining: 100,
                             parsed_color: None,
+                            sub_brand: String::new(),
+                            nozzle_temp_min: None,
+                            nozzle_temp_max: None,
                         }],
                         is_lite: false,
                     }],
@@ -1502,6 +1893,9 @@ mod tests {
                             material: "PETG".to_string(),
                             remaining: 85,
                             parsed_color: None,
+                            sub_brand: String::new(),
+                            nozzle_temp_min: None,
+                            nozzle_temp_max: None,
                         }],
                         is_lite: false,
                     }],
@@ -1525,6 +1919,9 @@ mod tests {
                             material: String::new(), // Empty tray
                             remaining: 0,
                             parsed_color: None,
+                            sub_brand: String::new(),
+                            nozzle_temp_min: None,
+                            nozzle_temp_max: None,
                         }],
                         is_lite: false,
                     }],
@@ -1546,9 +1943,13 @@ mod tests {
                             humidity: 4,
                             trays: smallvec![AmsTray {
                                 id: 0,
+
                                 material: "PLA".to_string(),
                                 remaining: 100,
                                 parsed_color: None,
+                                sub_brand: String::new(),
+                                nozzle_temp_min: None,
+                                nozzle_temp_max: None,
                             }],
                             is_lite: false,
                         },
@@ -1557,9 +1958,13 @@ mod tests {
                             humidity: 3,
                             trays: smallvec![AmsTray {
                                 id: 0,
+
                                 material: "ABS".to_string(),
                                 remaining: 50,
                                 parsed_color: None,
+                                sub_brand: String::new(),
+                                nozzle_temp_min: None,
+                                nozzle_temp_max: None,
                             }],
                             is_lite: false,
                         },
@@ -1616,6 +2021,459 @@ mod tests {
         fn empty_state_is_not_active() {
             let status = PrintStatus::default();
             assert!(!status.is_active());
+        }
+    }
+
+    /// Tests that deserialize JSON strings into MqttMessage, exercising the
+    /// same code path as real MQTT messages from the printer. This catches
+    /// type mismatches between JSON wire format and Rust struct definitions
+    /// that struct-construction tests miss entirely.
+    mod json_deserialization_tests {
+        use super::*;
+
+        /// Helper: deserialize JSON and assert it succeeds.
+        fn parse_mqtt(json: &str) -> MqttMessage {
+            serde_json::from_str::<MqttMessage>(json)
+                .unwrap_or_else(|e| panic!("Failed to parse: {e}\nJSON: {json}"))
+        }
+
+        /// Helper: deserialize JSON, apply to state, return state.
+        fn parse_and_apply(json: &str) -> PrinterState {
+            let msg = parse_mqtt(json);
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            state
+        }
+
+        #[test]
+        fn parses_minimal_status_message() {
+            let state =
+                parse_and_apply(r#"{"print": {"mc_percent": 42, "gcode_state": "RUNNING"}}"#);
+            assert_eq!(state.print_status.progress, 42);
+            assert_eq!(state.print_status.gcode_state, "RUNNING");
+        }
+
+        #[test]
+        fn parses_temperatures_and_fans() {
+            let state = parse_and_apply(
+                r#"{"print": {
+                    "nozzle_temper": 215.5,
+                    "bed_temper": 60.0,
+                    "chamber_temper": 35.2,
+                    "cooling_fan_speed": "15",
+                    "big_fan1_speed": "7",
+                    "big_fan2_speed": "0"
+                }}"#,
+            );
+            assert_eq!(state.temperatures.nozzle, 215.5);
+            assert_eq!(state.temperatures.bed, 60.0);
+            assert_eq!(state.temperatures.chamber, 35.2);
+            assert_eq!(state.speeds.fan_speed, 100);
+            assert_eq!(state.speeds.aux_fan_speed, 47);
+            assert_eq!(state.speeds.chamber_fan_speed, 0);
+        }
+
+        #[test]
+        fn parses_firmware_and_hardware_version() {
+            let state =
+                parse_and_apply(r#"{"print": {"hw_ver": "HW-1.2.3", "sw_ver": "01.08.02.00"}}"#);
+            assert_eq!(state.hardware_version, "HW-1.2.3");
+            assert_eq!(state.firmware_version, "01.08.02.00");
+        }
+
+        #[test]
+        fn parses_nozzle_diameter() {
+            let state = parse_and_apply(r#"{"print": {"nozzle_diameter": "0.4"}}"#);
+            assert_eq!(state.nozzle_diameter, "0.4");
+        }
+
+        #[test]
+        fn parses_heatbreak_fan_as_string() {
+            let state = parse_and_apply(r#"{"print": {"heatbreak_fan_speed": "15"}}"#);
+            assert_eq!(state.heatbreak_fan_speed, 100);
+        }
+
+        #[test]
+        fn parses_heatbreak_fan_as_integer() {
+            let state = parse_and_apply(r#"{"print": {"heatbreak_fan_speed": 15}}"#);
+            assert_eq!(state.heatbreak_fan_speed, 100);
+        }
+
+        #[test]
+        fn parses_gcode_start_time_as_number() {
+            let state = parse_and_apply(r#"{"print": {"gcode_start_time": 1700000000}}"#);
+            assert_eq!(state.gcode_start_time, Some(1_700_000_000));
+        }
+
+        #[test]
+        fn parses_gcode_start_time_as_string() {
+            let state = parse_and_apply(r#"{"print": {"gcode_start_time": "1700000000"}}"#);
+            assert_eq!(state.gcode_start_time, Some(1_700_000_000));
+        }
+
+        #[test]
+        fn ignores_zero_gcode_start_time() {
+            let state = parse_and_apply(r#"{"print": {"gcode_start_time": 0}}"#);
+            assert_eq!(state.gcode_start_time, None);
+        }
+
+        #[test]
+        fn parses_xcam_with_bool_values() {
+            let state = parse_and_apply(
+                r#"{"print": {"xcam": {
+                    "spaghetti_detector": true,
+                    "first_layer_inspector": false,
+                    "print_halt": true
+                }}}"#,
+            );
+            assert!(state.xcam.spaghetti_detector);
+            assert!(!state.xcam.first_layer_inspector);
+            assert!(state.xcam.print_halt);
+        }
+
+        #[test]
+        fn parses_xcam_with_integer_values() {
+            let state = parse_and_apply(
+                r#"{"print": {"xcam": {
+                    "spaghetti_detector": 1,
+                    "first_layer_inspector": 0,
+                    "print_halt": 1
+                }}}"#,
+            );
+            assert!(state.xcam.spaghetti_detector);
+            assert!(!state.xcam.first_layer_inspector);
+            assert!(state.xcam.print_halt);
+        }
+
+        #[test]
+        fn parses_xcam_with_string_values() {
+            let state = parse_and_apply(
+                r#"{"print": {"xcam": {
+                    "spaghetti_detector": "true",
+                    "first_layer_inspector": "false",
+                    "print_halt": "enable"
+                }}}"#,
+            );
+            assert!(state.xcam.spaghetti_detector);
+            assert!(!state.xcam.first_layer_inspector);
+            assert!(state.xcam.print_halt);
+        }
+
+        #[test]
+        fn parses_xcam_with_unknown_extra_fields() {
+            // Printers may send fields we don't model
+            let state = parse_and_apply(
+                r#"{"print": {"xcam": {
+                    "spaghetti_detector": true,
+                    "buildplate_marker_detector": true,
+                    "allow_skip_parts": false,
+                    "halt_print_sensitivity": "medium",
+                    "printing_monitor": true,
+                    "some_future_field": 42
+                }}}"#,
+            );
+            assert!(state.xcam.spaghetti_detector);
+        }
+
+        #[test]
+        fn parses_ipcam() {
+            let state = parse_and_apply(
+                r#"{"print": {"ipcam": {
+                    "ipcam_record": "enable",
+                    "timelapse": "disable",
+                    "resolution": "1080p"
+                }}}"#,
+            );
+            assert!(state.ipcam.recording);
+            assert!(!state.ipcam.timelapse);
+            assert_eq!(state.ipcam.resolution, "1080p");
+        }
+
+        #[test]
+        fn parses_ipcam_with_unknown_fields() {
+            let state = parse_and_apply(
+                r#"{"print": {"ipcam": {
+                    "ipcam_record": "enable",
+                    "ipcam_dev": "1",
+                    "mode_bits": 3
+                }}}"#,
+            );
+            assert!(state.ipcam.recording);
+        }
+
+        #[test]
+        fn parses_lights_report() {
+            let state = parse_and_apply(
+                r#"{"print": {"lights_report": [
+                    {"node": "chamber_light", "mode": "on"},
+                    {"node": "work_light", "mode": "off"}
+                ]}}"#,
+            );
+            assert!(state.lights.chamber_light);
+            assert!(!state.lights.work_light);
+        }
+
+        #[test]
+        fn parses_hms_errors() {
+            let state = parse_and_apply(
+                r#"{"print": {"hms": [
+                    {"attr": 16908288, "code": 117440513}
+                ]}}"#,
+            );
+            assert!(state.hms_received);
+            assert_eq!(state.hms_errors.len(), 1);
+        }
+
+        #[test]
+        fn parses_ams_with_tray_temps_as_strings() {
+            let state = parse_and_apply(
+                r#"{"print": {"ams": {
+                    "tray_now": "0",
+                    "ams": [{
+                        "id": "0",
+                        "humidity": "4",
+                        "tray": [{
+                            "id": "0",
+                            "tray_type": "PLA",
+                            "tray_color": "FF0000FF",
+                            "remain": 85,
+                            "tray_sub_brands": "Bambu PLA Basic",
+                            "nozzle_temp_min": "190",
+                            "nozzle_temp_max": "230"
+                        }]
+                    }]
+                }}}"#,
+            );
+            let ams = state.ams.as_ref().unwrap();
+            let tray = &ams.units[0].trays[0];
+            assert_eq!(tray.material, "PLA");
+            assert_eq!(tray.sub_brand, "Bambu PLA Basic");
+            assert_eq!(tray.nozzle_temp_min, Some(190));
+            assert_eq!(tray.nozzle_temp_max, Some(230));
+        }
+
+        #[test]
+        fn ignores_unknown_top_level_fields() {
+            // Printers send many fields we don't model
+            let state = parse_and_apply(
+                r#"{"print": {
+                    "mc_percent": 50,
+                    "mess_production_state": "active",
+                    "sdcard": true,
+                    "force_upgrade": false,
+                    "lifecycle": "product"
+                }}"#,
+            );
+            assert_eq!(state.print_status.progress, 50);
+        }
+
+        #[test]
+        fn handles_empty_print_object() {
+            let state = parse_and_apply(r#"{"print": {}}"#);
+            assert_eq!(state.print_status.progress, 0);
+        }
+
+        #[test]
+        fn handles_non_print_messages() {
+            // Some MQTT messages have different top-level keys
+            let msg = parse_mqtt(r#"{"info": {"command": "get_version"}}"#);
+            assert!(msg.print.is_none());
+        }
+
+        #[test]
+        fn parses_comprehensive_status_message() {
+            // Simulates a realistic full pushall response
+            let state = parse_and_apply(
+                r#"{"print": {
+                    "gcode_file": "benchy.gcode",
+                    "subtask_name": "Benchy",
+                    "mc_percent": 73,
+                    "layer_num": 150,
+                    "total_layer_num": 200,
+                    "mc_remaining_time": 45,
+                    "gcode_state": "RUNNING",
+                    "print_type": "local",
+                    "stg_cur": 0,
+                    "nozzle_temper": 215.0,
+                    "nozzle_target_temper": 220.0,
+                    "bed_temper": 60.0,
+                    "bed_target_temper": 60.0,
+                    "chamber_temper": 38.0,
+                    "spd_lvl": 2,
+                    "cooling_fan_speed": "10",
+                    "big_fan1_speed": "5",
+                    "big_fan2_speed": "3",
+                    "heatbreak_fan_speed": "12",
+                    "gcode_start_time": 1700000000,
+                    "nozzle_diameter": "0.4",
+                    "hw_ver": "HW-1.0",
+                    "sw_ver": "01.08.02.00",
+                    "wifi_signal": "-45dBm",
+                    "machine_name": "My Printer",
+                    "lights_report": [
+                        {"node": "chamber_light", "mode": "on"},
+                        {"node": "work_light", "mode": "on"}
+                    ],
+                    "xcam": {
+                        "spaghetti_detector": true,
+                        "first_layer_inspector": true,
+                        "print_halt": false
+                    },
+                    "ipcam": {
+                        "ipcam_record": "enable",
+                        "timelapse": "enable",
+                        "resolution": "1080p"
+                    },
+                    "ams": {
+                        "tray_now": "0",
+                        "ams": [{
+                            "id": "0",
+                            "humidity": "3",
+                            "tray": [{
+                                "id": "0",
+                                "tray_type": "PLA",
+                                "tray_color": "00FF00FF",
+                                "remain": 72,
+                                "tray_sub_brands": "Bambu PLA Matte",
+                                "nozzle_temp_min": "190",
+                                "nozzle_temp_max": "230"
+                            }]
+                        }]
+                    },
+                    "hms": []
+                }}"#,
+            );
+            assert_eq!(state.print_status.progress, 73);
+            assert_eq!(state.print_status.gcode_file, "benchy.gcode");
+            assert_eq!(state.print_status.layer_num, 150);
+            assert_eq!(state.temperatures.nozzle, 215.0);
+            assert_eq!(state.firmware_version, "01.08.02.00");
+            assert_eq!(state.nozzle_diameter, "0.4");
+            assert_eq!(state.heatbreak_fan_speed, 80); // 12/15 * 100
+            assert_eq!(state.gcode_start_time, Some(1_700_000_000));
+            assert!(state.xcam.spaghetti_detector);
+            assert!(state.ipcam.recording);
+            assert!(state.ipcam.timelapse);
+            assert!(state.lights.chamber_light);
+            assert!(state.lights.work_light);
+            assert_eq!(state.printer_name, "My Printer");
+            let tray = &state.ams.as_ref().unwrap().units[0].trays[0];
+            assert_eq!(tray.sub_brand, "Bambu PLA Matte");
+            assert_eq!(tray.nozzle_temp_min, Some(190));
+            assert!(state.hms_received);
+            assert!(state.hms_errors.is_empty());
+        }
+    }
+
+    /// Tests for data-driven capability detection via ReceivedFields.
+    mod capability_detection_tests {
+        use super::*;
+
+        #[test]
+        fn no_capabilities_by_default() {
+            let state = PrinterState::default();
+            assert!(!state.has_chamber_temp_sensor());
+            assert!(!state.has_heatbreak_fan());
+            assert!(!state.has_xcam());
+            assert!(!state.has_ipcam());
+            assert!(!state.has_work_light());
+            assert!(!state.has_aux_fan());
+            assert!(!state.has_chamber_fan());
+        }
+
+        #[test]
+        fn detects_chamber_temp_from_enclosed_model() {
+            let mut state = PrinterState::default();
+            state.set_model_from_serial("00M00A000000000"); // X1C
+            assert!(state.has_chamber_temp_sensor());
+        }
+
+        #[test]
+        fn no_chamber_temp_for_open_frame_model() {
+            let mut state = PrinterState::default();
+            state.set_model_from_serial("03900A000000000"); // A1
+            assert!(!state.has_chamber_temp_sensor());
+        }
+
+        #[test]
+        fn detects_heatbreak_fan() {
+            let msg: MqttMessage =
+                serde_json::from_str(r#"{"print": {"heatbreak_fan_speed": "10"}}"#).unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            assert!(state.has_heatbreak_fan());
+        }
+
+        #[test]
+        fn detects_xcam() {
+            let msg: MqttMessage =
+                serde_json::from_str(r#"{"print": {"xcam": {"spaghetti_detector": false}}}"#)
+                    .unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            assert!(state.has_xcam());
+        }
+
+        #[test]
+        fn detects_ipcam() {
+            let msg: MqttMessage =
+                serde_json::from_str(r#"{"print": {"ipcam": {"ipcam_record": "disable"}}}"#)
+                    .unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            assert!(state.has_ipcam());
+        }
+
+        #[test]
+        fn detects_work_light() {
+            let msg: MqttMessage = serde_json::from_str(
+                r#"{"print": {"lights_report": [{"node": "work_light", "mode": "off"}]}}"#,
+            )
+            .unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            assert!(state.has_work_light());
+        }
+
+        #[test]
+        fn chamber_light_does_not_set_work_light() {
+            let msg: MqttMessage = serde_json::from_str(
+                r#"{"print": {"lights_report": [{"node": "chamber_light", "mode": "on"}]}}"#,
+            )
+            .unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            assert!(!state.has_work_light());
+        }
+
+        #[test]
+        fn detects_aux_and_chamber_fans() {
+            let msg: MqttMessage = serde_json::from_str(
+                r#"{"print": {"big_fan1_speed": "5", "big_fan2_speed": "3"}}"#,
+            )
+            .unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+            assert!(state.has_aux_fan());
+            assert!(state.has_chamber_fan());
+        }
+
+        #[test]
+        fn capabilities_persist_across_updates() {
+            let mut state = PrinterState::default();
+
+            // First message has heatbreak fan
+            let msg1: MqttMessage =
+                serde_json::from_str(r#"{"print": {"heatbreak_fan_speed": "10"}}"#).unwrap();
+            state.update_from_message(&msg1);
+            assert!(state.has_heatbreak_fan());
+
+            // Second message doesn't mention heatbreak fan
+            let msg2: MqttMessage =
+                serde_json::from_str(r#"{"print": {"mc_percent": 50}}"#).unwrap();
+            state.update_from_message(&msg2);
+            // Should still be detected
+            assert!(state.has_heatbreak_fan());
         }
     }
 

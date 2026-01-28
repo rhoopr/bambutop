@@ -15,9 +15,16 @@ A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for yo
 - **Temperatures** — Nozzle, bed, and chamber with visual gauges
 - **Smart Chamber Display** — Shows safe temperature range based on active filament type (PLA, PETG, ABS, etc.)
 - **Fan Speeds** — Part cooling, auxiliary, and chamber fan percentages
+- **Heatbreak Fan** — Heatbreak fan speed percentage alongside other fans
 - **Printer Controls** — Adjust speed (Silent/Standard/Sport/Ludicrous), toggle chamber light
+- **Work Light Control** — Toggle work light independently from chamber light
 - **AMS Status** — Humidity grade (A-E), filament colors, materials, and remaining percentages
 - **HMS Alerts** — Health Management System notifications with severity coloring and timestamps
+- **Firmware Info** — Firmware version and nozzle diameter display
+- **AI Monitoring** — Spaghetti detection, first layer inspection indicators
+- **Camera Status** — Recording and timelapse indicators
+- **Elapsed Time** — Print elapsed time alongside remaining time and ETA
+- **Extended AMS Info** — Filament brand and recommended nozzle temperature range
 - **Multi-Printer Support** — Monitor multiple printers with Tab/number key navigation
 - **Help Overlay** — Press `?` to see all keyboard shortcuts
 
@@ -104,11 +111,12 @@ access_code = "87654321"
 | `u` | Toggle °C / °F |
 | `x` | Lock/unlock controls |
 | `l` | Toggle chamber light |
+| `w` | Toggle work light |
 | `+` / `-` | Adjust print speed |
 | `Space` | Pause/resume print |
 | `c` | Cancel print |
 
-Controls that affect the printer (`l`, `+/-`, `Space`, `c`) require unlocking first with `x`. Pause/resume and cancel require pressing the key twice to confirm.
+Controls that affect the printer (`l`, `w`, `+/-`, `Space`, `c`) require unlocking first with `x`. Pause/resume and cancel require pressing the key twice to confirm.
 
 ## Command-Line Options
 

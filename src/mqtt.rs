@@ -249,22 +249,6 @@ impl MqttClient {
         ))
     }
 
-    /// Convenience method for connecting to a single printer.
-    ///
-    /// This is equivalent to calling `connect(config, 0, None)` and is provided
-    /// for backwards compatibility and simpler single-printer usage.
-    #[allow(dead_code)] // Kept for backwards compatibility with single-printer usage
-    pub async fn connect_single(
-        config: PrinterConfig,
-    ) -> Result<(Self, SharedPrinterState, mpsc::Receiver<MqttEvent>)> {
-        let (client, state, rx) = Self::connect(config, 0, None).await?;
-        Ok((
-            client,
-            state,
-            rx.expect("receiver should exist when event_tx is None"),
-        ))
-    }
-
     /// Generates the next unique sequence ID for MQTT commands.
     ///
     /// Sequence IDs are monotonically increasing values used to correlate
@@ -293,6 +277,31 @@ impl MqttClient {
         .await
         .context("Publish operation timed out")?
         .context("Failed to request full status")?;
+
+        Ok(())
+    }
+
+    /// Requests firmware/hardware version information from the printer.
+    pub async fn request_version_info(&self) -> Result<()> {
+        let payload = serde_json::json!({
+            "info": {
+                "sequence_id": self.next_sequence_id(),
+                "command": "get_version"
+            }
+        });
+
+        tokio::time::timeout(
+            OPERATION_TIMEOUT,
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
+        )
+        .await
+        .context("Publish operation timed out")?
+        .context("Failed to request version info")?;
 
         Ok(())
     }
@@ -353,6 +362,37 @@ impl MqttClient {
         .await
         .context("Set chamber light operation timed out")?
         .context("Failed to set chamber light")?;
+
+        Ok(())
+    }
+
+    /// Sets the work light on or off.
+    ///
+    /// # Arguments
+    /// * `on` - true to turn the light on, false to turn it off
+    pub async fn set_work_light(&self, on: bool) -> Result<()> {
+        let mode = if on { "on" } else { "off" };
+        let payload = serde_json::json!({
+            "system": {
+                "sequence_id": self.next_sequence_id(),
+                "command": "ledctrl",
+                "led_node": "work_light",
+                "led_mode": mode
+            }
+        });
+
+        tokio::time::timeout(
+            OPERATION_TIMEOUT,
+            self.client.publish(
+                &self.request_topic,
+                QoS::AtMostOnce,
+                false,
+                payload.to_string(),
+            ),
+        )
+        .await
+        .context("Set work light operation timed out")?
+        .context("Failed to set work light")?;
 
         Ok(())
     }

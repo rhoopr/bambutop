@@ -5,7 +5,7 @@ mod printer;
 mod ui;
 mod wizard;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::{App, ViewMode};
 use clap::Parser;
 use crossterm::{
@@ -28,6 +28,9 @@ static TERMINAL_IN_RAW_MODE: AtomicBool = AtomicBool::new(false);
 
 /// UI refresh rate - how often to poll for events and redraw
 const UI_TICK_RATE: Duration = Duration::from_millis(250);
+
+/// MQTT event channel capacity per printer
+const CHANNEL_CAPACITY_PER_PRINTER: usize = 100;
 
 #[derive(Parser, Debug)]
 #[command(name = "bambutop")]
@@ -57,9 +60,10 @@ async fn main() -> Result<()> {
 
     // Handle --reset flag
     if args.reset {
-        let config_path = config::Config::config_path()?;
+        let config_path =
+            config::Config::config_path().context("failed to determine config path")?;
         if config_path.exists() {
-            std::fs::remove_file(&config_path)?;
+            std::fs::remove_file(&config_path).context("failed to remove config file")?;
         }
     }
 
@@ -80,7 +84,7 @@ async fn main() -> Result<()> {
             },
             extra_printers: vec![],
         };
-        config.save()?;
+        config.save().context("failed to save config")?;
         config
     } else {
         // Load from file or run wizard
@@ -128,7 +132,8 @@ async fn main() -> Result<()> {
     let printer_count = all_printers.len();
 
     // Create shared event channel for all printers
-    let (event_tx, mut mqtt_rx) = tokio::sync::mpsc::channel(100 * printer_count);
+    let (event_tx, mut mqtt_rx) =
+        tokio::sync::mpsc::channel(CHANNEL_CAPACITY_PER_PRINTER * printer_count);
 
     // Connect to all printers
     let mut mqtt_clients = Vec::with_capacity(printer_count);
@@ -147,9 +152,10 @@ async fn main() -> Result<()> {
     // Create app with all printer states
     let mut app = App::new_multi(printer_states);
 
-    // Request initial state from all printers
+    // Request initial state and version info from all printers
     for client in &mqtt_clients {
         client.request_full_status().await?;
+        client.request_version_info().await?;
     }
 
     // Main loop
@@ -318,6 +324,24 @@ async fn run_app(
                                     app.toast_error(format!("Light toggle failed: {}", e));
                                 } else {
                                     app.toast_success(format!("Light: {}", status));
+                                }
+                            }
+                        }
+                        KeyCode::Char('w') => {
+                            if !app.controls_locked {
+                                let current = app
+                                    .printer_state
+                                    .lock()
+                                    .expect("state lock poisoned")
+                                    .lights
+                                    .work_light;
+                                let new_state = !current;
+                                let status = if new_state { "ON" } else { "OFF" };
+                                let client = &mqtt_clients[app.active_printer_index()];
+                                if let Err(e) = client.set_work_light(new_state).await {
+                                    app.toast_error(format!("Work light toggle failed: {}", e));
+                                } else {
+                                    app.toast_success(format!("Work light: {}", status));
                                 }
                             }
                         }
