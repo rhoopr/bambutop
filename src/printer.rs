@@ -159,39 +159,52 @@ pub struct PrintStatus {
 }
 
 /// Printer stage codes from `stg_cur` MQTT field.
+///
+/// Values sourced from the Home Assistant Bambu Lab integration
+/// (`ha-bambulab` CURRENT_STAGE_IDS).
 mod stage {
     /// Auto bed leveling
     pub const AUTO_LEVELING: i32 = 1;
     /// Heatbed preheating
     pub const HEATBED_PREHEATING: i32 = 2;
-    /// Sweeping XY mech mode (nozzle heating phase)
-    pub const SWEEPING_XY: i32 = 7;
+    /// Sweeping XY mech mode
+    pub const SWEEPING_XY: i32 = 3;
+    /// Changing filament / AMS operation
+    pub const CHANGING_FILAMENT: i32 = 4;
+    /// M400 pause (user-commanded pause)
+    pub const M400_PAUSE: i32 = 5;
+    /// Paused due to filament runout
+    pub const FILAMENT_RUNOUT: i32 = 6;
+    /// Heating hotend
+    pub const HEATING_HOTEND: i32 = 7;
     /// Calibrating extrusion
     pub const CALIBRATING_EXTRUSION: i32 = 8;
-    /// Changing filament / AMS operation
-    pub const CHANGING_FILAMENT: i32 = 10;
-    /// M400 pause (user-commanded pause)
-    pub const M400_PAUSE: i32 = 11;
-    /// Filament runout pause
-    pub const FILAMENT_RUNOUT_PAUSE: i32 = 12;
-    /// Homing axes
+    /// Scanning bed surface
+    pub const SCANNING_BED: i32 = 9;
+    /// Inspecting first layer
+    pub const INSPECTING_FIRST_LAYER: i32 = 10;
+    /// Identifying build plate type
+    pub const IDENTIFYING_BUILD_PLATE: i32 = 11;
+    /// Calibrating micro lidar
+    pub const CALIBRATING_LIDAR: i32 = 12;
+    /// Homing toolhead
     pub const HOMING: i32 = 13;
     /// Cleaning nozzle tip
     pub const CLEANING_NOZZLE: i32 = 14;
-    /// Reserved / not commonly seen
-    pub const RESERVED_15: i32 = 15;
-    /// User paused
+    /// Checking extruder temperature
+    pub const CHECKING_EXTRUDER_TEMP: i32 = 15;
+    /// Paused by user
     pub const USER_PAUSED: i32 = 16;
-    /// Bed scan (bed mesh calibration)
-    pub const BED_SCAN: i32 = 17;
-    /// First layer inspection
-    pub const FIRST_LAYER_INSPECT: i32 = 18;
-    /// Idle (between operations)
-    pub const INTER_IDLE: i32 = 19;
-    /// Bed leveling in print
-    pub const BED_LEVELING_IN_PRINT: i32 = 20;
-    /// Extruder scanning
-    pub const EXTRUDER_SCAN: i32 = 21;
+    /// Paused due to front cover falling
+    pub const COVER_OPEN: i32 = 17;
+    /// Calibrating micro lidar (secondary)
+    pub const CALIBRATING_LIDAR_2: i32 = 18;
+    /// Calibrating extrusion flow
+    pub const CALIBRATING_FLOW: i32 = 19;
+    /// Paused due to nozzle temperature malfunction
+    pub const NOZZLE_TEMP_MALFUNCTION: i32 = 20;
+    /// Paused due to heat bed temperature malfunction
+    pub const BED_TEMP_MALFUNCTION: i32 = 21;
 }
 
 impl PrintStatus {
@@ -284,41 +297,31 @@ impl PrintStatus {
         }
 
         // Use stage code if available (more accurate than temperature inference)
-        // Bambu stg_cur codes based on protocol documentation:
-        // 0 = Idle/Printing, 1 = Auto bed leveling, 2 = Heatbed preheating,
-        // 3 = Sweeping XY mech mode, 4 = Changing filament, 5 = M400 pause,
-        // 6 = Paused due to filament runout, 7 = Heating hotend,
-        // 8 = Calibrating extrusion, 9 = Scanning bed surface,
-        // 10 = Inspecting first layer, 11 = Identifying build plate type,
-        // 12 = Calibrating Micro Lidar, 13 = Homing toolhead,
-        // 14 = Cleaning nozzle tip, 15 = Checking extruder temperature,
-        // 16 = Printing paused by user, 17 = Pause due to front cover falling,
-        // 18 = Calibrating the micro lidar, 19 = Calibrating extrusion flow,
-        // 20 = Paused due to nozzle temperature malfunction,
-        // 21 = Paused due to heat bed temperature malfunction
-        // -1 = Idle (no stage), actual printing uses stage_code 0 with progress > 0
+        // Bambu stg_cur codes sourced from ha-bambulab CURRENT_STAGE_IDS.
+        // See `mod stage` constants for the full mapping.
+        // -1 = Idle (no stage), 0 = Printing (with progress > 0)
         match self.stage_code {
             stage::AUTO_LEVELING => return Some("Auto-Leveling"),
             stage::HEATBED_PREHEATING => return Some("Heating Bed"),
-            stage::SWEEPING_XY => return Some("Heating Nozzle"),
-            stage::CALIBRATING_EXTRUSION | stage::INTER_IDLE => {
+            stage::SWEEPING_XY => return Some("Sweeping XY"),
+            stage::CHANGING_FILAMENT => return Some("Changing Filament"),
+            stage::M400_PAUSE | stage::USER_PAUSED => return Some("Paused"),
+            stage::FILAMENT_RUNOUT => return Some("Filament Runout"),
+            stage::HEATING_HOTEND => return Some("Heating Nozzle"),
+            stage::CALIBRATING_EXTRUSION | stage::CALIBRATING_FLOW => {
                 return Some("Calibrating Extrusion");
             }
-            9 => return Some("Scanning Bed"),
-            stage::CHANGING_FILAMENT => return Some("Inspecting First Layer"),
-            stage::M400_PAUSE => return Some("Identifying Build Plate"),
-            stage::FILAMENT_RUNOUT_PAUSE | stage::FIRST_LAYER_INSPECT => {
+            stage::SCANNING_BED => return Some("Scanning Bed"),
+            stage::INSPECTING_FIRST_LAYER => return Some("Inspecting First Layer"),
+            stage::IDENTIFYING_BUILD_PLATE => return Some("Identifying Build Plate"),
+            stage::CALIBRATING_LIDAR | stage::CALIBRATING_LIDAR_2 => {
                 return Some("Calibrating Lidar");
             }
             stage::HOMING => return Some("Homing"),
             stage::CLEANING_NOZZLE => return Some("Cleaning Nozzle"),
-            stage::RESERVED_15 => return Some("Checking Temperature"),
-            4 => return Some("Changing Filament"),
-            5 | stage::USER_PAUSED => return Some("Paused"),
-            6 => return Some("Filament Runout"),
-            3 => return Some("Sweeping XY"),
-            stage::BED_SCAN => return Some("Cover Open"),
-            stage::BED_LEVELING_IN_PRINT | stage::EXTRUDER_SCAN => {
+            stage::CHECKING_EXTRUDER_TEMP => return Some("Checking Temperature"),
+            stage::COVER_OPEN => return Some("Cover Open"),
+            stage::NOZZLE_TEMP_MALFUNCTION | stage::BED_TEMP_MALFUNCTION => {
                 return Some("Temperature Error");
             }
             _ => {}
@@ -894,7 +897,7 @@ impl PrinterState {
 
     /// Returns true if the printer model has a chamber temperature sensor.
     ///
-    /// Only enclosed printers (X1, P1, P2, H2 series) have real chamber sensors.
+    /// Only enclosed printers (X1, P2S, H2 series) have real chamber sensors.
     /// Open-frame printers (A1 series) report ambient noise values via MQTT
     /// and should not display chamber temperature.
     pub fn has_chamber_temp_sensor(&self) -> bool {
@@ -969,7 +972,11 @@ impl PrinterState {
                                         material: t.tray_type.clone().unwrap_or_default(),
                                         remaining: t.remain.unwrap_or(0).max(0) as u8,
                                         parsed_color: parse_hex_color(color_str),
-                                        sub_brand: t.tray_sub_brands.clone().unwrap_or_default(),
+                                        sub_brand: t
+                                            .tray_sub_brands
+                                            .as_deref()
+                                            .unwrap_or_default()
+                                            .to_string(),
                                         nozzle_temp_min: t
                                             .nozzle_temp_min
                                             .as_deref()
