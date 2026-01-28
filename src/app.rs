@@ -14,11 +14,16 @@ use std::time::{Duration, Instant};
 const TOAST_DURATION: Duration = Duration::from_secs(3);
 
 /// Duration after which a connection is considered stale if no messages received
-#[allow(dead_code)] // Used by is_connection_stale() for future stale connection detection
+#[cfg(test)]
 const STALE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
 
 /// Maximum number of toasts to display at once
 const MAX_TOASTS: usize = 3;
+
+/// Seconds per hour for timezone offset calculation
+const SECS_PER_HOUR: i32 = 3600;
+/// Seconds per minute for timezone offset calculation
+const SECS_PER_MINUTE: i32 = 60;
 
 /// View mode for the UI - single printer detail or aggregate overview
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,24 +71,20 @@ pub struct App {
     // Multi-printer state management fields - these are new infrastructure for multi-printer
     // support and will be used by main.rs and UI code once multi-printer feature is integrated.
     /// All printer states for multi-printer support
-    #[allow(dead_code)] // Will be used by multi-printer integration
     printers: Vec<SharedPrinterState>,
     /// Connection status for each printer (parallel to printers vec)
-    #[allow(dead_code)] // Will be used by multi-printer integration
     printer_connections: Vec<bool>,
     /// Cached count of connected printers for O(1) access.
     ///
     /// This field is maintained incrementally by `set_printer_connected()` to avoid
     /// O(n) iteration over `printer_connections` each time the count is needed.
     /// The count is updated only when a connection state actually changes.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     connected_count: usize,
     /// Last update timestamp for each printer (parallel to printers vec)
     printer_last_updates: Vec<Option<Instant>>,
     /// Error messages for each printer (parallel to printers vec)
     printer_error_messages: Vec<Option<String>>,
     /// Index of the currently active/selected printer
-    #[allow(dead_code)] // Will be used by multi-printer integration
     active_printer_index: usize,
     /// Timestamp of the last state update from the printer
     pub last_update: Option<Instant>,
@@ -105,7 +106,6 @@ pub struct App {
     /// Positive values are east of UTC, negative values are west.
     /// Note: This field is intentionally cached at startup for use by time-related
     /// rendering (ETA display, last updated timestamps) to avoid repeated computation.
-    #[allow(dead_code)] // Getter provided for future use by UI rendering code
     timezone_offset_secs: i32,
     /// Whether to show the help overlay
     pub show_help: bool,
@@ -118,7 +118,7 @@ impl App {
     ///
     /// Computes and caches the local timezone offset at startup.
     /// For backward compatibility, initializes multi-printer support with the single printer.
-    #[allow(dead_code)] // Kept for backwards compatibility with single-printer usage
+    #[cfg(test)]
     pub fn new(printer_state: SharedPrinterState) -> Self {
         // Initialize with single printer for backward compatibility
         let printers = vec![Arc::clone(&printer_state)];
@@ -198,23 +198,10 @@ impl App {
     // by main.rs and UI code once multi-printer feature is fully integrated.
     // ========================================================================
 
-    /// Returns the currently active printer state, if any printers exist.
-    #[allow(dead_code)]
-    pub fn get_active_printer(&self) -> Option<&SharedPrinterState> {
-        self.printers.get(self.active_printer_index)
-    }
-
-    /// Returns the printer state at the given index, if it exists.
-    #[allow(dead_code)]
-    pub fn get_printer(&self, index: usize) -> Option<&SharedPrinterState> {
-        self.printers.get(index)
-    }
-
     /// Returns the number of printers that are currently connected.
     ///
     /// This returns a cached count maintained by `set_printer_connected()`,
     /// providing O(1) access instead of O(n) iteration over printer connections.
-    #[allow(dead_code)]
     pub fn get_connected_count(&self) -> usize {
         self.connected_count
     }
@@ -258,19 +245,6 @@ impl App {
         }
     }
 
-    /// Adds a new printer to the list.
-    ///
-    /// Returns the index of the newly added printer.
-    #[allow(dead_code)] // Will be used by multi-printer integration
-    pub fn add_printer(&mut self, printer_state: SharedPrinterState) -> usize {
-        let index = self.printers.len();
-        self.printers.push(printer_state);
-        self.printer_connections.push(false);
-        self.printer_last_updates.push(None);
-        self.printer_error_messages.push(None);
-        index
-    }
-
     /// Updates the connection status for a specific printer.
     ///
     /// Maintains the cached `connected_count` incrementally:
@@ -279,7 +253,6 @@ impl App {
     /// - No change if the state is already the target value
     ///
     /// Also updates the legacy `connected` field if this is the active printer.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn set_printer_connected(&mut self, index: usize, connected: bool) {
         if let Some(conn) = self.printer_connections.get_mut(index) {
             let was_connected = *conn;
@@ -302,7 +275,6 @@ impl App {
     /// Updates the last update timestamp for a specific printer.
     ///
     /// Also updates the legacy `last_update` field if this is the active printer.
-    #[allow(dead_code)] // Will be used by multi-printer integration
     pub fn set_printer_last_update(&mut self, index: usize, timestamp: Option<Instant>) {
         if let Some(last_update) = self.printer_last_updates.get_mut(index) {
             *last_update = timestamp;
@@ -321,7 +293,6 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Returns the last update timestamp for a specific printer.
     /// Returns the last update timestamp for a specific printer.
     pub fn get_printer_last_update(&self, index: usize) -> Option<Instant> {
         self.printer_last_updates.get(index).copied().flatten()
@@ -353,7 +324,7 @@ impl App {
                 if let Some(offset_part) = tz.get(3..) {
                     if let Ok(hours) = offset_part.parse::<i32>() {
                         // Note: TZ convention is opposite (EST5 means UTC-5)
-                        return -hours * 3600;
+                        return -hours * SECS_PER_HOUR;
                     }
                 }
                 return 0;
@@ -373,7 +344,7 @@ impl App {
                 offset_str[1..3].parse::<i32>(),
                 offset_str[3..5].parse::<i32>(),
             ) {
-                return sign * (hours * 3600 + mins * 60);
+                return sign * (hours * SECS_PER_HOUR + mins * SECS_PER_MINUTE);
             }
         }
         0
@@ -386,7 +357,6 @@ impl App {
     ///
     /// This value is computed once at startup and cached for use by time-related
     /// rendering (ETA display, last updated timestamps).
-    #[allow(dead_code)] // Provided for future use by UI rendering code
     pub fn timezone_offset_secs(&self) -> i32 {
         self.timezone_offset_secs
     }
@@ -443,7 +413,7 @@ impl App {
     /// Returns true if the connection appears stale (connected but no recent messages).
     /// A connection is considered stale if we're marked as connected but haven't
     /// received any messages for STALE_CONNECTION_THRESHOLD duration.
-    #[allow(dead_code)] // Provided for future stale connection detection
+    #[cfg(test)]
     pub fn is_connection_stale(&self) -> bool {
         if !self.connected {
             return false;

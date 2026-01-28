@@ -119,6 +119,7 @@ pub struct PrinterConfig {
     pub port: u16,
 }
 
+/// Returns the default MQTT port for serde deserialization.
 fn default_port() -> u16 {
     DEFAULT_MQTT_PORT
 }
@@ -136,7 +137,7 @@ impl Config {
     /// - `Ok(None)` if the config file does not exist
     /// - `Err(...)` if the file exists but cannot be read or parsed
     pub fn load() -> Result<Option<Self>> {
-        let config_path = Self::config_path()?;
+        let config_path = Self::config_path().context("failed to determine config file path")?;
 
         if !config_path.exists() {
             return Ok(None);
@@ -187,7 +188,7 @@ impl Config {
     /// Always saves in the new multi-printer format (`[[printers]]` array),
     /// even if the config was originally loaded from a legacy format.
     pub fn save(&self) -> Result<()> {
-        let config_path = Self::config_path()?;
+        let config_path = Self::config_path().context("failed to determine config file path")?;
 
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)

@@ -15,6 +15,10 @@ const MIN_ACCESS_CODE_LENGTH: usize = 4;
 /// Expected length for Bambu serial numbers
 const EXPECTED_SERIAL_LENGTH: usize = 15;
 
+/// Runs the interactive first-run setup wizard.
+///
+/// Prompts the user for printer IP, serial number, and access code,
+/// validates the input, saves the configuration, and returns it.
 pub fn run_setup_wizard() -> Result<Config> {
     println!();
     println!("Welcome to bambutop!");

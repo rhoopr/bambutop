@@ -70,11 +70,13 @@ pub fn render(
     let light_text = if light_on { "ON " } else { "OFF" };
     // Left: "  +/- Speed: {speed}" = 2 + 3 + 8 + speed_text.len()
     let left1_width = 13 + speed_text.len();
-    // Right: "l Light: {light}" = 1 + 8 + 3 = 12
-    let right1_width = 12;
+    // Right side width depends on whether work light is available
+    let has_work_light = printer_state.has_work_light();
+    // "l Light: {light}" = 12, optionally + "  w Work: {work}" = 14
+    let right1_width = if has_work_light { 26 } else { 12 };
     let padding1 = (inner.width as usize).saturating_sub(left1_width + right1_width);
 
-    let line1 = Line::from(vec![
+    let mut line1_spans = vec![
         Span::raw("  "),
         Span::styled(
             "+",
@@ -99,7 +101,25 @@ pub fn render(
         Span::styled("l", key_style),
         Span::styled(" Light: ", label_style),
         Span::styled(light_text, light_style),
-    ]);
+    ];
+    if has_work_light {
+        line1_spans.push(Span::raw("  "));
+        line1_spans.push(Span::styled("w", key_style));
+        line1_spans.push(Span::styled(" Work: ", label_style));
+        line1_spans.push(Span::styled(
+            if printer_state.lights.work_light {
+                "ON "
+            } else {
+                "OFF"
+            },
+            if printer_state.lights.work_light {
+                Style::new().fg(Color::Yellow)
+            } else {
+                Style::new().fg(Color::DarkGray)
+            },
+        ));
+    }
+    let line1 = Line::from(line1_spans);
 
     // Line 2: Print actions or lock/confirmation indicator
     let line2 = if controls_locked {

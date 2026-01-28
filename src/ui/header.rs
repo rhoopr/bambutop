@@ -19,6 +19,18 @@ use ratatui::{
 use smallvec::SmallVec;
 use std::time::Instant;
 
+/// Seconds per minute for time formatting
+const SECS_PER_MINUTE: u64 = 60;
+/// Seconds per hour for time formatting
+const SECS_PER_HOUR: u64 = 3600;
+/// Seconds per day for time formatting
+const SECS_PER_DAY: u64 = 86_400;
+
+/// HMS severity level considered a warning (yellow)
+const HMS_SEVERITY_WARNING: u8 = 1;
+/// HMS severity level considered a serious error (light red)
+const HMS_SEVERITY_ERROR: u8 = 2;
+
 /// Renders the header panel with printer status and system info boxes.
 pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     // Split into two boxes side by side
@@ -74,7 +86,33 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
-    frame.render_widget(Paragraph::new(status_line), inner);
+
+    // Camera/monitoring indicators below status
+    let ai_on = printer_state.has_xcam() && printer_state.xcam.spaghetti_detector;
+    let rec_on = printer_state.has_ipcam() && printer_state.ipcam.recording;
+    let tl_on = printer_state.has_ipcam() && printer_state.ipcam.timelapse;
+    let dot = |on: bool| -> Span {
+        let color = if on { Color::Green } else { Color::DarkGray };
+        Span::styled("●", Style::new().fg(color))
+    };
+    let label = Style::new().fg(Color::DarkGray);
+    let cam_spans: Vec<Span> = vec![
+        Span::raw(" "),
+        Span::styled("AI", label),
+        dot(ai_on),
+        Span::raw(" "),
+        Span::styled("REC", label),
+        dot(rec_on),
+        Span::raw(" "),
+        Span::styled("TL", label),
+        dot(tl_on),
+    ];
+
+    let mut lines = vec![status_line];
+    if cam_spans.len() > 1 {
+        lines.push(Line::from(cam_spans));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
@@ -98,7 +136,7 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
     // Split inner area: left for status, right for WiFi
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(22)])
+        .constraints([Constraint::Min(1), Constraint::Length(28)])
         .split(inner);
 
     // Left side: status messages (pre-allocate for typical case)
@@ -112,12 +150,19 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
     } else if !printer_state.hms_errors.is_empty() {
         for error in &printer_state.hms_errors {
             let severity_color = match error.severity {
-                0..=1 => Color::Yellow,
-                2 => Color::LightRed,
+                0..=HMS_SEVERITY_WARNING => Color::Yellow,
+                HMS_SEVERITY_ERROR => Color::LightRed,
                 _ => Color::Red,
             };
             let relative_time = format_relative_time(error.received_at);
+            let error_code = format!(
+                "{:04X}_{:04X}",
+                (error.code >> 16) & 0xFFFF,
+                error.code & 0xFFFF,
+            );
             lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(error_code, Style::new().fg(Color::DarkGray)),
                 Span::raw(" "),
                 Span::styled(error.message.as_str(), Style::new().fg(severity_color)),
                 Span::raw(" "),
@@ -143,11 +188,29 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 
     frame.render_widget(Paragraph::new(lines.into_vec()), cols[0]);
 
-    // Right side: WiFi indicator
+    // Right side: System info (WiFi, firmware, nozzle, camera)
+    let mut info_lines: Vec<Line> = Vec::with_capacity(3);
+
+    // Line 1: WiFi signal
     let wifi_spans = render_wifi_signal(&printer_state.wifi_signal);
-    let wifi_line = Line::from(wifi_spans);
+    info_lines.push(Line::from(wifi_spans));
+
+    // Line 2: Firmware + camera/monitoring indicators
+    let mut info_spans: Vec<Span> = Vec::with_capacity(10);
+    if !printer_state.firmware_version.is_empty() {
+        info_spans.push(Span::styled("FW: ", Style::new().fg(Color::DarkGray)));
+        info_spans.push(Span::styled(
+            printer_state.firmware_version.as_str(),
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    if !info_spans.is_empty() {
+        info_spans.push(Span::raw(" "));
+        info_lines.push(Line::from(info_spans));
+    }
+
     frame.render_widget(
-        Paragraph::new(wifi_line).alignment(Alignment::Right),
+        Paragraph::new(info_lines).alignment(Alignment::Right),
         cols[1],
     );
 }
@@ -206,13 +269,13 @@ fn format_relative_time(instant: Instant) -> String {
     let elapsed = instant.elapsed();
     let secs = elapsed.as_secs();
 
-    if secs < 60 {
+    if secs < SECS_PER_MINUTE {
         "just now".to_string()
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
+    } else if secs < SECS_PER_HOUR {
+        format!("{}m ago", secs / SECS_PER_MINUTE)
+    } else if secs < SECS_PER_DAY {
+        format!("{}h ago", secs / SECS_PER_HOUR)
     } else {
-        format!("{}d ago", secs / 86400)
+        format!("{}d ago", secs / SECS_PER_DAY)
     }
 }
