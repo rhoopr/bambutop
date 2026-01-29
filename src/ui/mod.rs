@@ -72,10 +72,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         area
     };
 
-    // Calculate temps panel height based on chamber sensor and active tray
+    // Calculate middle row height: max of temps and AMS panel heights
     let has_chamber = printer_state.has_chamber_temp_sensor();
     let has_active_tray = printer_state.active_filament_type().is_some();
     let temps_height = temps::panel_height(has_chamber, has_active_tray);
+    let ams_height = status::panel_height(&printer_state);
+    let temps_height = temps_height.max(ams_height);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -119,10 +121,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
 
-    // Controls row: empty left half, controls on right half
+    // Controls row: spacer on left, controls on right (fixed width for content)
     let controls_row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Min(0), Constraint::Length(60)])
         .split(chunks[4]);
 
     controls::render(

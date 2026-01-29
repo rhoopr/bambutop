@@ -23,6 +23,50 @@ const COLOR_ORANGE: Color = Color::Rgb(255, 165, 0);
 /// Humidity grade labels as static strings to avoid allocation in render loop
 const HUMIDITY_GRADES: [&str; 5] = ["A", "B", "C", "D", "E"];
 
+/// Border overhead for the AMS panel (top + bottom borders)
+const AMS_BORDER_HEIGHT: u16 = 2;
+
+/// Calculates the required height for the AMS panel based on content.
+///
+/// Counts lines exactly as `render_ams` would produce them so the layout
+/// allocates enough vertical space.
+pub fn panel_height(printer_state: &PrinterState) -> u16 {
+    let lines = match &printer_state.ams {
+        Some(ams) => {
+            let mut count: u16 = 0;
+            let num_units = ams.units.len();
+            for unit in &ams.units {
+                // Separator between units
+                if unit.id > 0 && num_units > 1 {
+                    count += 1;
+                }
+                // Spacer above non-first unit
+                if unit.id > 0 {
+                    count += 1;
+                }
+                // Unit header
+                count += 1;
+                // Humidity line (non-Lite only)
+                if !unit.is_lite {
+                    count += 1;
+                }
+                // "Filament:" header
+                count += 1;
+                // Tray lines
+                for tray in &unit.trays {
+                    count += 1; // main tray line
+                    if !tray.sub_brand.is_empty() {
+                        count += 1; // sub-brand line
+                    }
+                }
+            }
+            count
+        }
+        None => 1, // "No AMS detected"
+    };
+    lines + AMS_BORDER_HEIGHT
+}
+
 /// Renders the AMS (Automatic Material System) status panel.
 pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let block = Block::default()

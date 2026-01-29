@@ -71,14 +71,14 @@ pub fn speed_level_to_percent(level: u8) -> u32 {
 pub struct ReceivedFields(u16);
 
 impl ReceivedFields {
-    const HEATBREAK_FAN: u16 = 1 << 1;
-    const XCAM: u16 = 1 << 2;
-    const IPCAM: u16 = 1 << 3;
-    const WORK_LIGHT: u16 = 1 << 4;
-    const AUX_FAN: u16 = 1 << 5;
-    const CHAMBER_FAN: u16 = 1 << 6;
+    pub(crate) const HEATBREAK_FAN: u16 = 1 << 1;
+    pub(crate) const XCAM: u16 = 1 << 2;
+    pub(crate) const IPCAM: u16 = 1 << 3;
+    pub(crate) const WORK_LIGHT: u16 = 1 << 4;
+    pub(crate) const AUX_FAN: u16 = 1 << 5;
+    pub(crate) const CHAMBER_FAN: u16 = 1 << 6;
 
-    fn set(&mut self, flag: u16) {
+    pub(crate) fn set(&mut self, flag: u16) {
         self.0 |= flag;
     }
 
