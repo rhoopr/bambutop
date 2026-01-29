@@ -577,7 +577,6 @@ pub struct HmsReport {
 /// Xcam report from MQTT. Bambu printers send xcam fields inconsistently
 /// (booleans as strings, ints, or actual bools), so we accept any JSON value
 /// and parse manually. Unknown fields are ignored.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct XcamReport {
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
