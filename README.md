@@ -2,10 +2,9 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest) ![GitHub Downloads](https://img.shields.io/github/downloads/rhoopr/bambutop/total)
 
-A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for your 3D printer.
+A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D printer.
 
 ![BambuTop Detail View](screenshot-detail.png)
-
 ![BambuTop Aggregate View](screenshot-aggregate.png)
 
 ## Features
