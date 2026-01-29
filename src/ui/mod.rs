@@ -15,6 +15,7 @@ mod temps;
 mod toast;
 
 use crate::app::{App, ViewMode};
+use crate::printer::PrinterState;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -28,10 +29,21 @@ use std::borrow::Cow;
 const MAX_CONTENT_WIDTH: u16 = 100;
 
 /// Seconds before data is considered slightly stale (yellow warning)
-pub(crate) const STALE_WARNING_SECS: u64 = 5;
+pub(crate) const STALE_WARNING_SECS: u64 = 10;
 
 /// Seconds before data is considered critically stale (red warning)
 pub(crate) const STALE_CRITICAL_SECS: u64 = 30;
+
+/// Minimum header panel height (borders + 2 lines of content)
+const MIN_HEADER_HEIGHT: u16 = 4;
+/// Border overhead for the header panel (top + bottom)
+const HEADER_BORDER_HEIGHT: u16 = 2;
+
+/// Calculates the header panel height based on the number of HMS errors.
+fn header_height(printer_state: &PrinterState) -> u16 {
+    let error_count = printer_state.hms_errors.len() as u16;
+    (HEADER_BORDER_HEIGHT + error_count).max(MIN_HEADER_HEIGHT)
+}
 
 /// Renders the main application UI.
 ///
@@ -60,20 +72,22 @@ pub fn render(frame: &mut Frame, app: &App) {
         area
     };
 
-    // Calculate temps panel height based on chamber sensor and active tray
+    // Calculate middle row height: max of temps and AMS panel heights
     let has_chamber = printer_state.has_chamber_temp_sensor();
     let has_active_tray = printer_state.active_filament_type().is_some();
     let temps_height = temps::panel_height(has_chamber, has_active_tray);
+    let ams_height = status::panel_height(&printer_state);
+    let temps_height = temps_height.max(ams_height);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),            // Header (status + system info)
-            Constraint::Length(7),            // Progress (job, spacer, info, bar, spacer)
+            Constraint::Length(header_height(&printer_state)), // Header (status + system info)
+            Constraint::Length(7), // Progress (job, spacer, info, bar, spacer)
             Constraint::Length(temps_height), // Temps + AMS row (dynamic height)
-            Constraint::Min(1),               // Spacer (absorbs extra space)
-            Constraint::Length(4),            // Controls row (right-aligned)
-            Constraint::Length(1),            // Help bar
+            Constraint::Min(1),    // Spacer (absorbs extra space)
+            Constraint::Length(4), // Controls row (right-aligned)
+            Constraint::Length(1), // Help bar
         ])
         .split(content_area);
 
@@ -107,10 +121,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
 
-    // Controls row: empty left half, controls on right half
+    // Controls row: spacer on left, controls on right (fixed width for content)
     let controls_row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Min(0), Constraint::Length(60)])
         .split(chunks[4]);
 
     controls::render(

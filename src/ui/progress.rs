@@ -61,14 +61,22 @@ pub fn render(
         job_name
     };
 
-    let file_line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled("Job: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(
-            truncate_str(&job_display, MAX_JOB_NAME_DISPLAY_LEN),
-            Style::new().fg(Color::White),
-        ),
-    ]);
+    let mut file_spans: Vec<Span> = Vec::with_capacity(6);
+    file_spans.push(Span::raw(" "));
+    if !printer_state.nozzle_diameter.is_empty() {
+        file_spans.push(Span::styled("Nozzle: ", Style::new().fg(Color::DarkGray)));
+        file_spans.push(Span::styled(
+            format!("{}mm", printer_state.nozzle_diameter),
+            Style::new().fg(Color::Cyan),
+        ));
+        file_spans.push(Span::raw("  "));
+    }
+    file_spans.push(Span::styled("Job: ", Style::new().fg(Color::DarkGray)));
+    file_spans.push(Span::styled(
+        truncate_str(&job_display, MAX_JOB_NAME_DISPLAY_LEN),
+        Style::new().fg(Color::White),
+    ));
+    let file_line = Line::from(file_spans);
     frame.render_widget(Paragraph::new(file_line), chunks[0]);
 
     // Print phase (only shown when job is active)
@@ -84,6 +92,23 @@ pub fn render(
     // Progress, Layer and time remaining
     let time_remaining = format_time(print_status.remaining_time_mins);
     let eta_clock = format_eta_clock(print_status.remaining_time_mins, timezone_offset_secs);
+
+    // Calculate elapsed time from gcode_start_time
+    let elapsed_display: Cow<'_, str> = printer_state
+        .gcode_start_time
+        .and_then(|start_ts| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            if now > start_ts {
+                let elapsed_mins = ((now - start_ts) / 60) as u32;
+                Some(format_time(elapsed_mins))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Cow::Borrowed("--:--"));
 
     // Build remaining time display with ETA clock if available
     let remaining_display: Cow<'_, str> = if print_status.remaining_time_mins == 0 {
@@ -101,21 +126,29 @@ pub fn render(
         Cow::Borrowed("-/-")
     };
 
-    let info_line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled("Progress: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{}%", print_status.progress),
-            Style::new().fg(Color::Cyan),
-        ),
-        Span::raw("  "),
-        Span::styled("Layer: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(layer_value, Style::new().fg(Color::Cyan)),
-        Span::raw("  "),
-        Span::styled("Remaining: ", Style::new().fg(Color::DarkGray)),
-        Span::styled(remaining_display, Style::new().fg(Color::Cyan)),
-    ]);
-    frame.render_widget(Paragraph::new(info_line), chunks[2]);
+    let mut info_spans: Vec<Span> = Vec::with_capacity(12);
+    info_spans.push(Span::raw(" "));
+    info_spans.push(Span::styled("Progress: ", Style::new().fg(Color::DarkGray)));
+    info_spans.push(Span::styled(
+        format!("{}%", print_status.progress),
+        Style::new().fg(Color::Cyan),
+    ));
+    info_spans.push(Span::raw("  "));
+    info_spans.push(Span::styled("Layer: ", Style::new().fg(Color::DarkGray)));
+    info_spans.push(Span::styled(layer_value, Style::new().fg(Color::Cyan)));
+    info_spans.push(Span::raw("  "));
+    info_spans.push(Span::styled("Elapsed: ", Style::new().fg(Color::DarkGray)));
+    info_spans.push(Span::styled(elapsed_display, Style::new().fg(Color::Cyan)));
+    info_spans.push(Span::raw("  "));
+    info_spans.push(Span::styled(
+        "Remaining: ",
+        Style::new().fg(Color::DarkGray),
+    ));
+    info_spans.push(Span::styled(
+        remaining_display,
+        Style::new().fg(Color::Cyan),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(info_spans)), chunks[2]);
 
     // Progress bar
     let progress = print_status.progress as f64 / 100.0;

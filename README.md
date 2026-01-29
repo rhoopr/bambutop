@@ -2,24 +2,44 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest) ![GitHub Downloads](https://img.shields.io/github/downloads/rhoopr/bambutop/total)
 
-A terminal-based status monitor for Bambu Lab printers. Think `htop`, but for your 3D printer.
+A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D printer.
 
 ![BambuTop Detail View](screenshot-detail.png)
-
 ![BambuTop Aggregate View](screenshot-aggregate.png)
 
 ## Features
 
-- **Print Progress** — Job name, layer count, time remaining, and ETA clock time (e.g., "1h 30m (ETA 2:45 PM)")
-- **Print Phase** — Current activity: Heating Bed, Heating Nozzle, Auto-Leveling, Printing, etc.
-- **Temperatures** — Nozzle, bed, and chamber with visual gauges
-- **Smart Chamber Display** — Shows safe temperature range based on active filament type (PLA, PETG, ABS, etc.)
-- **Fan Speeds** — Part cooling, auxiliary, and chamber fan percentages
-- **Printer Controls** — Adjust speed (Silent/Standard/Sport/Ludicrous), toggle chamber light
-- **AMS Status** — Humidity grade (A-E), filament colors, materials, and remaining percentages
-- **HMS Alerts** — Health Management System notifications with severity coloring and timestamps
-- **Multi-Printer Support** — Monitor multiple printers with Tab/number key navigation
-- **Help Overlay** — Press `?` to see all keyboard shortcuts
+**Print Monitoring**
+- Job name, layer count, elapsed time, time remaining, and ETA clock time
+- Current print phase: Heating Bed, Heating Nozzle, Auto-Leveling, Printing, etc.
+- Visual progress bar with percentage
+
+**Temperatures & Fans**
+- Nozzle, bed, and chamber temperatures with visual gauges (°C or °F)
+- Safe chamber temperature range based on active filament type (PLA, PETG, ABS, etc.)
+- Part cooling, auxiliary, chamber, and heatbreak fan speeds
+
+**Printer Controls**
+- Adjust speed: Silent / Standard / Sport / Ludicrous
+- Toggle chamber light and work light
+- Pause, resume, and cancel prints (with confirmation)
+- Controls lock to prevent accidental changes
+
+**AMS & Filament**
+- Humidity grade (A-E) per AMS unit
+- Filament colors, materials, brand, and remaining percentages
+- Recommended nozzle temperature range per filament
+
+**System Info**
+- HMS (Health Management System) alerts with severity and timestamps
+- WiFi signal strength with visual indicator
+- Firmware version and nozzle diameter
+- AI spaghetti detection, recording, and timelapse indicators
+
+**Multi-Printer Support**
+- Monitor multiple printers from a single terminal
+- Aggregate overview grid with per-printer status cards
+- Navigate with Tab, Shift+Tab, or number keys 1-9
 
 ## Supported Printers
 
@@ -101,19 +121,21 @@ access_code = "87654321"
 | `Tab` | Next printer |
 | `Shift+Tab` | Previous printer |
 | `1-9` | Jump to printer by number |
+| `a` | Aggregate overview |
 | `u` | Toggle °C / °F |
 | `x` | Lock/unlock controls |
 | `l` | Toggle chamber light |
+| `w` | Toggle work light |
 | `+` / `-` | Adjust print speed |
 | `Space` | Pause/resume print |
 | `c` | Cancel print |
 
-Controls that affect the printer (`l`, `+/-`, `Space`, `c`) require unlocking first with `x`. Pause/resume and cancel require pressing the key twice to confirm.
+Controls that affect the printer (`l`, `w`, `+/-`, `Space`, `c`) require unlocking first with `x`. Pause/resume and cancel require pressing the key twice to confirm.
 
 ## Command-Line Options
 
 ```bash
-# Skip config file and connect directly
+# Connect directly (saves to config file)
 bambutop --ip 192.168.1.100 --serial YOUR_SERIAL --access-code YOUR_CODE
 
 # Reset config and re-run setup wizard

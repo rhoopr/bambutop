@@ -5,7 +5,7 @@
 
 use super::common::{
     extract_serial_suffix, format_compact_title, gcode_state_to_status, parse_dbm,
-    WIFI_MEDIUM_THRESHOLD, WIFI_STRONG_THRESHOLD,
+    WIFI_DEFAULT_DBM, WIFI_MEDIUM_THRESHOLD, WIFI_STRONG_THRESHOLD,
 };
 use super::{STALE_CRITICAL_SECS, STALE_WARNING_SECS};
 use crate::app::App;
@@ -103,7 +103,7 @@ fn wifi_indicator(wifi_signal: &str) -> (Color, &'static str) {
         return (Color::DarkGray, "--");
     }
 
-    let dbm = parse_dbm(wifi_signal).unwrap_or(-100);
+    let dbm = parse_dbm(wifi_signal).unwrap_or(WIFI_DEFAULT_DBM);
 
     if dbm > WIFI_STRONG_THRESHOLD {
         (Color::Green, "\u{2582}\u{2584}\u{2586}")

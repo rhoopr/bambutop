@@ -1,10 +1,10 @@
-//! Help overlay component displaying keyboard shortcuts.
+//! Help overlay component displaying keyboard shortcuts and status indicators.
 //!
 //! This module renders a centered modal overlay showing all available
-//! keyboard shortcuts for the application.
+//! keyboard shortcuts and status indicator descriptions.
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -17,35 +17,19 @@ struct Shortcut {
     description: &'static str,
 }
 
-/// All keyboard shortcuts displayed in the help overlay
-const SHORTCUTS: &[Shortcut] = &[
+/// Navigation shortcuts
+const NAV_SHORTCUTS: &[Shortcut] = &[
+    Shortcut {
+        key: "? / h",
+        description: "This help",
+    },
     Shortcut {
         key: "q / Esc",
         description: "Quit",
     },
     Shortcut {
-        key: "x",
-        description: "Toggle controls lock",
-    },
-    Shortcut {
         key: "u",
         description: "Toggle Celsius/Fahrenheit",
-    },
-    Shortcut {
-        key: "l",
-        description: "Toggle chamber light",
-    },
-    Shortcut {
-        key: "+ / -",
-        description: "Adjust print speed",
-    },
-    Shortcut {
-        key: "Space",
-        description: "Pause/Resume print",
-    },
-    Shortcut {
-        key: "c",
-        description: "Cancel print",
     },
     Shortcut {
         key: "Tab",
@@ -60,86 +44,153 @@ const SHORTCUTS: &[Shortcut] = &[
         description: "Select printer",
     },
     Shortcut {
-        key: "? / h",
-        description: "This help",
+        key: "a",
+        description: "Aggregate view",
+    },
+];
+
+/// Printer control shortcuts (require unlock with x)
+const CONTROL_SHORTCUTS: &[Shortcut] = &[
+    Shortcut {
+        key: "x",
+        description: "Toggle controls lock",
+    },
+    Shortcut {
+        key: "l",
+        description: "Toggle chamber light",
+    },
+    Shortcut {
+        key: "w",
+        description: "Toggle work light",
+    },
+    Shortcut {
+        key: "+ / -",
+        description: "Adjust print speed",
+    },
+    Shortcut {
+        key: "Space",
+        description: "Pause/Resume print",
+    },
+    Shortcut {
+        key: "c",
+        description: "Cancel print",
+    },
+];
+
+/// Status indicator definitions
+struct Indicator {
+    label: &'static str,
+    description: &'static str,
+}
+
+/// Status indicators displayed in the help overlay
+const INDICATORS: &[Indicator] = &[
+    Indicator {
+        label: "AI",
+        description: "Spaghetti detection",
+    },
+    Indicator {
+        label: "REC",
+        description: "Camera recording",
+    },
+    Indicator {
+        label: "TL",
+        description: "Timelapse enabled",
     },
 ];
 
 /// Width of the help overlay (including borders)
-const OVERLAY_WIDTH: u16 = 40;
-
-/// Calculates the height needed for the help overlay
-fn overlay_height() -> u16 {
-    // Title (1) + blank line (1) + shortcuts + blank line (1) + footer (1) + borders (2)
-    (SHORTCUTS.len() as u16) + 6
-}
+const OVERLAY_WIDTH: u16 = 42;
 
 /// Renders the help overlay centered on the screen.
 pub fn render(frame: &mut Frame, area: Rect) {
-    let height = overlay_height();
+    let mut lines: Vec<Line> = Vec::with_capacity(32);
 
-    // Center the overlay
+    // Section: Navigation
+    lines.push(section_title("Navigation"));
+    for s in NAV_SHORTCUTS {
+        lines.push(shortcut_line(s));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Section: Printer Controls
+    lines.push(section_title("Printer Controls"));
+    for s in CONTROL_SHORTCUTS {
+        lines.push(shortcut_line(s));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Section: Status Indicators
+    lines.push(section_title("Status Indicators"));
+    for i in INDICATORS {
+        lines.push(indicator_line(i));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Footer
+    lines.push(Line::from(vec![
+        Span::raw("        "),
+        Span::styled(
+            "Press any key to close",
+            Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ]));
+
+    // borders (2) + content lines
+    let height = lines.len() as u16 + 2;
     let popup_area = centered_rect(OVERLAY_WIDTH, height, area);
 
-    // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
-    // Create the block with borders
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Cyan))
         .style(Style::new().bg(Color::Black));
 
-    // Calculate inner area for content
     let inner_area = block.inner(popup_area);
-
-    // Render the block
     frame.render_widget(block, popup_area);
 
-    // Create layout for content
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Title
-            Constraint::Length(1), // Blank line
-            Constraint::Min(1),    // Shortcuts
-            Constraint::Length(1), // Blank line
-            Constraint::Length(1), // Footer
-        ])
-        .split(inner_area);
+    let content = Paragraph::new(lines);
+    frame.render_widget(content, inner_area);
+}
 
-    // Title
-    let title = Paragraph::new(Line::from(vec![Span::styled(
-        "Keyboard Shortcuts",
-        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-    )]))
-    .alignment(Alignment::Center);
-    frame.render_widget(title, chunks[0]);
+/// Left padding for key/label column to center content within the overlay
+const LEFT_PAD: &str = "  ";
 
-    // Shortcuts list
-    let shortcut_lines: Vec<Line> = SHORTCUTS
-        .iter()
-        .map(|s| {
-            Line::from(vec![
-                Span::styled(format!("{:>12}", s.key), Style::new().fg(Color::Yellow)),
-                Span::raw("  "),
-                Span::styled(s.description, Style::new().fg(Color::White)),
-            ])
-        })
-        .collect();
+/// Renders a section title line with padding to align with content.
+fn section_title(title: &str) -> Line<'_> {
+    Line::from(vec![
+        Span::raw(LEFT_PAD),
+        Span::styled(
+            title,
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
 
-    let shortcuts = Paragraph::new(shortcut_lines).alignment(Alignment::Center);
-    frame.render_widget(shortcuts, chunks[2]);
+/// Renders a keyboard shortcut line.
+fn shortcut_line(s: &Shortcut) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(LEFT_PAD),
+        Span::styled(format!("{:>10}", s.key), Style::new().fg(Color::Yellow)),
+        Span::raw("  "),
+        Span::styled(s.description, Style::new().fg(Color::White)),
+    ])
+}
 
-    // Footer
-    let footer = Paragraph::new(Line::from(vec![Span::styled(
-        "Press any key to close",
-        Style::new()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC),
-    )]))
-    .alignment(Alignment::Center);
-    frame.render_widget(footer, chunks[4]);
+/// Renders a status indicator line.
+fn indicator_line(i: &Indicator) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(LEFT_PAD),
+        Span::styled(format!("{:>10}", i.label), Style::new().fg(Color::Green)),
+        Span::raw("  "),
+        Span::styled(i.description, Style::new().fg(Color::White)),
+    ])
 }
 
 /// Helper function to create a centered rectangle.
