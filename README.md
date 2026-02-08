@@ -162,6 +162,13 @@ bambutop --reset
 - Ensure your terminal supports Unicode
 - Try a different terminal (iTerm2, Ghostty, Alacritty, kitty, etc.)
 
+## Acknowledgments
+
+This project wouldn't be possible without the work of the Bambu Lab community:
+
+- **[OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI)** — Comprehensive reverse-engineered MQTT protocol documentation
+- **[ha-bambulab](https://github.com/greghesp/ha-bambulab)** — Home Assistant integration with extensive field mappings and protocol insights
+
 ## License
 
 GPLv3 — See [LICENSE](LICENSE) for details.
