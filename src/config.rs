@@ -239,30 +239,6 @@ impl Config {
         all.extend(self.extra_printers.iter().cloned());
         all
     }
-
-    /// Returns a reference to the slice of extra printers (excluding the primary).
-    ///
-    /// Use `all_printers()` to get all printers including the primary.
-    #[allow(dead_code)] // Will be used by multi-printer integration
-    pub fn extra_printers(&self) -> &[PrinterConfig] {
-        &self.extra_printers
-    }
-
-    /// Adds an extra printer to the configuration.
-    #[allow(dead_code)] // Will be used by multi-printer integration
-    pub fn add_printer(&mut self, printer: PrinterConfig) {
-        self.extra_printers.push(printer);
-    }
-}
-
-impl PrinterConfig {
-    /// Returns the display name for this printer.
-    ///
-    /// If a friendly name is set, returns that. Otherwise, returns the serial number.
-    #[allow(dead_code)] // Will be used by UI for printer selection
-    pub fn display_name(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.serial)
-    }
 }
 
 #[cfg(test)]
@@ -355,8 +331,8 @@ access_code = "87654321"
         // Verify primary printer is first one
         assert_eq!(config.printer.ip, "192.168.1.100");
         // Verify extra_printers has the second one
-        assert_eq!(config.extra_printers().len(), 1);
-        assert_eq!(config.extra_printers()[0].ip, "192.168.1.101");
+        assert_eq!(config.extra_printers.len(), 1);
+        assert_eq!(config.extra_printers[0].ip, "192.168.1.101");
     }
 
     #[test]
@@ -457,32 +433,6 @@ access_code = "12345678"
     }
 
     #[test]
-    fn test_display_name_with_friendly_name() {
-        let printer = PrinterConfig {
-            name: Some("My Cool Printer".to_string()),
-            ip: "192.168.1.100".to_string(),
-            serial: "01P00A000000000".to_string(),
-            access_code: "12345678".to_string(),
-            port: DEFAULT_MQTT_PORT,
-        };
-
-        assert_eq!(printer.display_name(), "My Cool Printer");
-    }
-
-    #[test]
-    fn test_display_name_without_friendly_name() {
-        let printer = PrinterConfig {
-            name: None,
-            ip: "192.168.1.100".to_string(),
-            serial: "01P00A000000000".to_string(),
-            access_code: "12345678".to_string(),
-            port: DEFAULT_MQTT_PORT,
-        };
-
-        assert_eq!(printer.display_name(), "01P00A000000000");
-    }
-
-    #[test]
     fn test_backwards_compatible_construction() {
         // Test that existing code pattern still works
         let config = Config {
@@ -498,31 +448,6 @@ access_code = "12345678"
 
         assert_eq!(config.all_printers().len(), 1);
         assert_eq!(config.printer.ip, "192.168.1.1");
-    }
-
-    #[test]
-    fn test_add_printer() {
-        let mut config = Config {
-            printer: PrinterConfig {
-                name: Some("P1".to_string()),
-                ip: "192.168.1.1".to_string(),
-                serial: "S1".to_string(),
-                access_code: "C1".to_string(),
-                port: DEFAULT_MQTT_PORT,
-            },
-            extra_printers: vec![],
-        };
-
-        config.add_printer(PrinterConfig {
-            name: Some("P2".to_string()),
-            ip: "192.168.1.2".to_string(),
-            serial: "S2".to_string(),
-            access_code: "C2".to_string(),
-            port: DEFAULT_MQTT_PORT,
-        });
-
-        assert_eq!(config.all_printers().len(), 2);
-        assert_eq!(config.extra_printers().len(), 1);
     }
 
     #[test]
@@ -652,7 +577,7 @@ access_code = "3"
         assert_eq!(all[1].serial, "B");
         assert_eq!(all[2].serial, "C");
 
-        assert_eq!(config.extra_printers().len(), 2);
+        assert_eq!(config.extra_printers.len(), 2);
     }
 
     /// Verifies that printer ordering is preserved through a full round-trip:
@@ -723,9 +648,9 @@ access_code = "444"
         assert_eq!(reloaded.printer.serial, "FIRST");
 
         // Verify extra_printers order
-        assert_eq!(reloaded.extra_printers().len(), 3);
-        assert_eq!(reloaded.extra_printers()[0].serial, "SECOND");
-        assert_eq!(reloaded.extra_printers()[1].serial, "THIRD");
-        assert_eq!(reloaded.extra_printers()[2].serial, "FOURTH");
+        assert_eq!(reloaded.extra_printers.len(), 3);
+        assert_eq!(reloaded.extra_printers[0].serial, "SECOND");
+        assert_eq!(reloaded.extra_printers[1].serial, "THIRD");
+        assert_eq!(reloaded.extra_printers[2].serial, "FOURTH");
     }
 }

@@ -24,6 +24,9 @@ const HMS_BYTE_MASK: u32 = 0xFF;
 /// Number of tray slots per AMS unit.
 const AMS_TRAYS_PER_UNIT: u8 = 4;
 
+/// Maximum number of AMS units supported (0-3, i.e. up to 4 units).
+const MAX_AMS_UNITS: u8 = 4;
+
 /// Maximum fan speed value in Bambu's 0-15 scale.
 const BAMBU_FAN_SCALE_MAX: u32 = 15;
 /// Percentage scale maximum.
@@ -944,8 +947,15 @@ impl PrinterState {
             if let Ok(tray_val) = tray.parse::<u8>() {
                 if tray_val < TRAY_EXTERNAL_SPOOL {
                     // Calculate unit and slot from combined tray value
-                    ams_state.current_unit = Some(tray_val / AMS_TRAYS_PER_UNIT);
-                    ams_state.current_tray = Some(tray_val % AMS_TRAYS_PER_UNIT);
+                    let unit = tray_val / AMS_TRAYS_PER_UNIT;
+                    if unit < MAX_AMS_UNITS {
+                        ams_state.current_unit = Some(unit);
+                        ams_state.current_tray = Some(tray_val % AMS_TRAYS_PER_UNIT);
+                    } else {
+                        // Out-of-range unit index, treat as no selection
+                        ams_state.current_unit = None;
+                        ams_state.current_tray = None;
+                    }
                 } else {
                     // External spool (254) or no selection (255)
                     ams_state.current_unit = None;

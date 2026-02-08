@@ -68,8 +68,7 @@ pub struct App {
     pub printer_state: SharedPrinterState,
     /// Whether the MQTT connection is active - kept for backward compatibility
     pub connected: bool,
-    // Multi-printer state management fields - these are new infrastructure for multi-printer
-    // support and will be used by main.rs and UI code once multi-printer feature is integrated.
+    // Multi-printer state management fields used by main.rs and UI rendering.
     /// All printer states for multi-printer support
     printers: Vec<SharedPrinterState>,
     /// Connection status for each printer (parallel to printers vec)
@@ -194,8 +193,6 @@ impl App {
 
     // ========================================================================
     // Multi-printer accessors and mutators
-    // These methods provide the API for multi-printer support and will be used
-    // by main.rs and UI code once multi-printer feature is fully integrated.
     // ========================================================================
 
     /// Returns the number of printers that are currently connected.
