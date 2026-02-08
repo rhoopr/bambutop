@@ -20,6 +20,12 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 /// Timeout for MQTT operations (subscribe, publish)
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Default channel capacity when creating a standalone event channel (no shared sender)
+const FALLBACK_CHANNEL_CAPACITY: usize = 100;
+
+/// Capacity of the internal rumqttc event queue for buffering incoming MQTT packets
+const MQTT_EVENT_QUEUE_CAPACITY: usize = 10;
+
 /// Certificate verifier that accepts any certificate (for self-signed Bambu certs)
 #[derive(Debug)]
 struct NoVerifier;
@@ -129,7 +135,7 @@ impl MqttClient {
         let (tx, rx) = match event_tx {
             Some(sender) => (sender, None),
             None => {
-                let (sender, receiver) = mpsc::channel(100);
+                let (sender, receiver) = mpsc::channel(FALLBACK_CHANNEL_CAPACITY);
                 (sender, Some(receiver))
             }
         };
@@ -163,7 +169,7 @@ impl MqttClient {
             Arc::new(tls_config),
         )));
 
-        let (client, mut eventloop) = AsyncClient::new(mqtt_opts, 10);
+        let (client, mut eventloop) = AsyncClient::new(mqtt_opts, MQTT_EVENT_QUEUE_CAPACITY);
 
         // Clone for the spawned task
         let state_clone = Arc::clone(&state);

@@ -137,6 +137,34 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Run the main application logic, capturing the result
+    let result = run_main(&mut terminal, &config).await;
+
+    // Always restore terminal, regardless of success or failure
+    TERMINAL_IN_RAW_MODE.store(false, Ordering::SeqCst);
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    );
+    let _ = terminal.show_cursor();
+
+    if let Err(err) = result {
+        eprintln!("Error: {}", err);
+    }
+
+    Ok(())
+}
+
+/// Runs the main application logic after terminal setup.
+///
+/// This is separated from `main()` so that terminal restoration always happens
+/// in the caller, even if this function returns an error.
+async fn run_main(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config: &config::Config,
+) -> Result<()> {
     // Get all configured printers
     let all_printers = config.all_printers();
     let printer_count = all_printers.len();
@@ -170,7 +198,7 @@ async fn main() -> Result<()> {
 
     // Main loop
     let result = run_app(
-        &mut terminal,
+        terminal,
         &mut app,
         &mut mqtt_rx,
         UI_TICK_RATE,
@@ -183,21 +211,7 @@ async fn main() -> Result<()> {
         client.disconnect().await;
     }
 
-    // Restore terminal
-    TERMINAL_IN_RAW_MODE.store(false, Ordering::SeqCst);
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(err) = result {
-        eprintln!("Error: {}", err);
-    }
-
-    Ok(())
+    result
 }
 
 /// Runs the TUI in demo mode with pre-populated printer data.
@@ -237,15 +251,15 @@ async fn run_demo() -> Result<()> {
 
     let result = run_app(&mut terminal, &mut app, &mut mqtt_rx, UI_TICK_RATE, &[]).await;
 
-    // Restore terminal
+    // Always restore terminal, regardless of success or failure
     TERMINAL_IN_RAW_MODE.store(false, Ordering::SeqCst);
-    disable_raw_mode()?;
-    execute!(
+    let _ = disable_raw_mode();
+    let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    );
+    let _ = terminal.show_cursor();
 
     if let Err(err) = result {
         eprintln!("Error: {}", err);
