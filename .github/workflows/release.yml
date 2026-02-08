@@ -103,3 +103,52 @@ jobs:
           files: artifacts/**/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: upload-assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Download release tarballs and compute hashes
+        id: hashes
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          BASE_URL="https://github.com/rhoopr/bambutop/releases/download/v${VERSION}"
+
+          curl -sL "${BASE_URL}/bambutop-linux-x86_64.tar.gz" -o linux-x86_64.tar.gz
+          curl -sL "${BASE_URL}/bambutop-macos-x86_64.tar.gz" -o macos-x86_64.tar.gz
+          curl -sL "${BASE_URL}/bambutop-macos-aarch64.tar.gz" -o macos-aarch64.tar.gz
+
+          echo "linux_x86_64=$(sha256sum linux-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "macos_x86_64=$(sha256sum macos-x86_64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "macos_aarch64=$(sha256sum macos-aarch64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: rhoopr/homebrew-bambutop
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          FORMULA="Formula/bambutop.rb"
+
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FORMULA"
+          sed -i "/macos-aarch64.tar.gz/{n;s/sha256 \".*\"/sha256 \"${{ steps.hashes.outputs.macos_aarch64 }}\"/;}" "$FORMULA"
+          sed -i "/macos-x86_64.tar.gz/{n;s/sha256 \".*\"/sha256 \"${{ steps.hashes.outputs.macos_x86_64 }}\"/;}" "$FORMULA"
+          sed -i "/linux-x86_64.tar.gz/{n;s/sha256 \".*\"/sha256 \"${{ steps.hashes.outputs.linux_x86_64 }}\"/;}" "$FORMULA"
+
+          cat "$FORMULA"
+
+      - name: Commit and push formula update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/bambutop.rb
+          git diff --staged --quiet || git commit -m "feat: update bambutop to ${{ steps.version.outputs.version }}"
+          git push

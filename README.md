@@ -52,6 +52,11 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+```bash
+brew install rhoopr/bambutop/bambutop
+```
+
 ### macOS (Apple Silicon)
 ```bash
 curl -LO https://github.com/rhoopr/bambutop/releases/latest/download/bambutop-macos-aarch64.tar.gz
