@@ -23,8 +23,10 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default channel capacity when creating a standalone event channel (no shared sender)
 const FALLBACK_CHANNEL_CAPACITY: usize = 100;
 
-/// Capacity of the internal rumqttc event queue for buffering incoming MQTT packets
-const MQTT_EVENT_QUEUE_CAPACITY: usize = 10;
+/// Capacity of the internal rumqttc event queue for buffering incoming MQTT packets.
+/// Bambu printers send frequent status updates; a small buffer risks overflow
+/// which causes rumqttc to disconnect (and then triggers re-subscription).
+const MQTT_EVENT_QUEUE_CAPACITY: usize = 50;
 
 /// Certificate verifier that accepts any certificate (for self-signed Bambu certs)
 #[derive(Debug)]
@@ -103,6 +105,8 @@ pub struct MqttClient {
     client: AsyncClient,
     /// Handle to the background event loop task for graceful shutdown
     _event_loop_handle: JoinHandle<()>,
+    /// Cached report topic for re-subscription (e.g., "device/{serial}/report")
+    report_topic: String,
     /// Cached request topic to avoid repeated format! allocations
     request_topic: String,
     /// Atomic counter for generating unique sequence IDs for MQTT commands
@@ -169,11 +173,21 @@ impl MqttClient {
             Arc::new(tls_config),
         )));
 
+        // Build topic strings before spawning so the event loop can re-subscribe
+        // after reconnections. MQTT brokers discard subscriptions when
+        // clean_session=true (the rumqttc default), so every reconnect needs a
+        // fresh subscribe + pushall to restore the data stream.
+        let report_topic = format!("device/{}/report", config.serial);
+        let request_topic = format!("device/{}/request", config.serial);
+
         let (client, mut eventloop) = AsyncClient::new(mqtt_opts, MQTT_EVENT_QUEUE_CAPACITY);
 
         // Clone for the spawned task
         let state_clone = Arc::clone(&state);
         let tx_clone = tx;
+        let client_clone = client.clone();
+        let report_topic_clone = report_topic.clone();
+        let request_topic_clone = request_topic.clone();
 
         // Spawn event loop handler
         let event_loop_handle = tokio::spawn(async move {
@@ -184,6 +198,29 @@ impl MqttClient {
                             let mut state_guard = state_clone.lock().expect("state lock poisoned");
                             state_guard.connected = true;
                         }
+                        // Re-subscribe on every (re)connection. The broker drops
+                        // all subscriptions for clean sessions, so without this
+                        // the client stays connected but never receives data after
+                        // a reconnect — the root cause of stale printer state.
+                        let _ = client_clone
+                            .subscribe(&report_topic_clone, QoS::AtMostOnce)
+                            .await;
+                        // Request full printer state so we have current data
+                        // immediately rather than waiting for the next periodic push.
+                        let pushall = serde_json::json!({
+                            "pushing": {
+                                "sequence_id": "0",
+                                "command": "pushall"
+                            }
+                        });
+                        let _ = client_clone
+                            .publish(
+                                &request_topic_clone,
+                                QoS::AtMostOnce,
+                                false,
+                                pushall.to_string(),
+                            )
+                            .await;
                         let _ = tx_clone.send(MqttEvent::Connected { printer_index }).await;
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
@@ -230,8 +267,8 @@ impl MqttClient {
             }
         });
 
-        // Subscribe to printer reports
-        let report_topic = format!("device/{}/report", config.serial);
+        // Initial subscribe — validates the first connection can reach the broker.
+        // Subsequent reconnections are handled by the ConnAck handler above.
         tokio::time::timeout(
             OPERATION_TIMEOUT,
             client.subscribe(&report_topic, QoS::AtMostOnce),
@@ -240,13 +277,11 @@ impl MqttClient {
         .context("Subscribe operation timed out")?
         .context("Failed to subscribe to printer topic")?;
 
-        // Cache the request topic to avoid repeated format! allocations
-        let request_topic = format!("device/{}/request", config.serial);
-
         Ok((
             Self {
                 client,
                 _event_loop_handle: event_loop_handle,
+                report_topic,
                 request_topic,
                 sequence_id: AtomicU64::new(1),
             },
@@ -261,6 +296,23 @@ impl MqttClient {
     /// requests with responses from the printer.
     fn next_sequence_id(&self) -> String {
         self.sequence_id.fetch_add(1, Ordering::Relaxed).to_string()
+    }
+
+    /// Re-subscribes to the printer's report topic and requests a full status push.
+    ///
+    /// Use this to manually recover from stale connections where the subscription
+    /// may have been silently lost without triggering a disconnect.
+    pub async fn refresh(&self) -> Result<()> {
+        tokio::time::timeout(
+            OPERATION_TIMEOUT,
+            self.client
+                .subscribe(&self.report_topic, QoS::AtMostOnce),
+        )
+        .await
+        .context("Subscribe operation timed out")?
+        .context("Failed to re-subscribe to printer topic")?;
+
+        self.request_full_status().await
     }
 
     pub async fn request_full_status(&self) -> Result<()> {
