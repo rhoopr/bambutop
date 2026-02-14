@@ -195,11 +195,8 @@ async fn run_main(
     // Create app with all printer states
     let mut app = App::new_multi(printer_states);
 
-    // Request initial state and version info from all printers
-    for client in &mqtt_clients {
-        client.request_full_status().await?;
-        client.request_version_info().await?;
-    }
+    // Initial status/version requests are handled by the ConnAck handler in
+    // mqtt.rs, which fires on every (re)connection. No need to request here.
 
     // Main loop
     let result = run_app(

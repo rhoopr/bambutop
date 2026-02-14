@@ -205,22 +205,22 @@ impl MqttClient {
                         let _ = client_clone
                             .subscribe(&report_topic_clone, QoS::AtMostOnce)
                             .await;
-                        // Request full printer state so we have current data
-                        // immediately rather than waiting for the next periodic push.
-                        let pushall = serde_json::json!({
-                            "pushing": {
-                                "sequence_id": "0",
-                                "command": "pushall"
-                            }
-                        });
-                        let _ = client_clone
-                            .publish(
-                                &request_topic_clone,
-                                QoS::AtMostOnce,
-                                false,
-                                pushall.to_string(),
-                            )
-                            .await;
+                        // Request full printer state and version info so we have
+                        // current data immediately rather than waiting for the
+                        // next periodic push.
+                        for payload in [
+                            r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#,
+                            r#"{"info":{"sequence_id":"0","command":"get_version"}}"#,
+                        ] {
+                            let _ = client_clone
+                                .publish(
+                                    &request_topic_clone,
+                                    QoS::AtMostOnce,
+                                    false,
+                                    payload,
+                                )
+                                .await;
+                        }
                         let _ = tx_clone.send(MqttEvent::Connected { printer_index }).await;
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
@@ -267,15 +267,10 @@ impl MqttClient {
             }
         });
 
-        // Initial subscribe — validates the first connection can reach the broker.
-        // Subsequent reconnections are handled by the ConnAck handler above.
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            client.subscribe(&report_topic, QoS::AtMostOnce),
-        )
-        .await
-        .context("Subscribe operation timed out")?
-        .context("Failed to subscribe to printer topic")?;
+        // No explicit subscribe here — the ConnAck handler above subscribes on
+        // every (re)connection, including the first. This also improves multi-printer
+        // resilience: connect() always succeeds, and temporarily offline printers
+        // show as "Disconnected" in the UI rather than crashing the app at startup.
 
         Ok((
             Self {
@@ -335,31 +330,6 @@ impl MqttClient {
         .await
         .context("Publish operation timed out")?
         .context("Failed to request full status")?;
-
-        Ok(())
-    }
-
-    /// Requests firmware/hardware version information from the printer.
-    pub async fn request_version_info(&self) -> Result<()> {
-        let payload = serde_json::json!({
-            "info": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "get_version"
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
-        )
-        .await
-        .context("Publish operation timed out")?
-        .context("Failed to request version info")?;
 
         Ok(())
     }
