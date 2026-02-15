@@ -365,6 +365,9 @@ pub struct Temperatures {
 #[derive(Debug, Clone, Default)]
 pub struct Speeds {
     pub speed_level: u8,
+    /// Actual speed magnitude percentage from `spd_mag` MQTT field.
+    /// `None` until the printer reports it.
+    pub speed_magnitude: Option<u8>,
     pub fan_speed: u8,
     pub aux_fan_speed: u8,
     pub chamber_fan_speed: u8,
@@ -513,6 +516,7 @@ pub struct PrintReport {
 
     // Speeds & fans
     pub spd_lvl: Option<u8>,
+    pub spd_mag: Option<u8>,
     pub cooling_fan_speed: Option<String>,
     pub big_fan1_speed: Option<String>,
     pub big_fan2_speed: Option<String>,
@@ -732,6 +736,9 @@ impl PrinterState {
         // Speeds
         if let Some(v) = report.spd_lvl {
             self.speeds.speed_level = v;
+        }
+        if let Some(v) = report.spd_mag {
+            self.speeds.speed_magnitude = Some(v);
         }
         if let Some(v) = &report.cooling_fan_speed {
             if let Some(speed) = parse_fan_speed(v) {
@@ -1545,6 +1552,23 @@ mod tests {
             assert_eq!(state.print_status.remaining_time_mins, 45);
             assert_eq!(state.print_status.gcode_state, "RUNNING");
             assert_eq!(state.print_status.print_type, "local");
+        }
+
+        #[test]
+        fn updates_speed_magnitude() {
+            let mut state = PrinterState::default();
+            assert_eq!(state.speeds.speed_magnitude, None);
+
+            let msg = MqttMessage {
+                print: Some(PrintReport {
+                    spd_mag: Some(140),
+                    ..Default::default()
+                }),
+                info: None,
+            };
+            state.update_from_message(&msg);
+
+            assert_eq!(state.speeds.speed_magnitude, Some(140));
         }
 
         #[test]

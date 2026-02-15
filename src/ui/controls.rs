@@ -3,7 +3,7 @@
 //! Displays print speed, chamber light, and print job controls (pause/cancel)
 //! in a clean two-line layout with keyboard shortcuts.
 
-use crate::printer::{speed_level_to_name, speed_level_to_percent, PrinterState};
+use crate::printer::{speed_level_to_name, PrinterState};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -43,7 +43,7 @@ pub fn render(
     // Gather state
     let speed_level = printer_state.speeds.speed_level;
     let speed_name = speed_level_to_name(speed_level);
-    let speed_percent = speed_level_to_percent(speed_level);
+    let speed_magnitude = printer_state.speeds.speed_magnitude;
 
     let light_on = printer_state.lights.chamber_light;
     let gcode_state = printer_state.print_status.gcode_state.as_str();
@@ -66,7 +66,10 @@ pub fn render(
 
     // Line 1: Speed on left, Light on right
     // Calculate widths for right-alignment
-    let speed_text = format!("{} ({}%)", speed_name, speed_percent);
+    let speed_text = match speed_magnitude {
+        Some(mag) => format!("{} ({}%)", speed_name, mag),
+        None => speed_name.to_string(),
+    };
     let light_text = if light_on { "ON " } else { "OFF" };
     // Left: "  +/- Speed: {speed}" = 2 + 3 + 8 + speed_text.len()
     let left1_width = 13 + speed_text.len();

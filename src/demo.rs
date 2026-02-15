@@ -64,6 +64,7 @@ fn office_x1c() -> PrinterState {
         },
         speeds: Speeds {
             speed_level: 3,
+            speed_magnitude: Some(140),
             fan_speed: 80,
             aux_fan_speed: 60,
             chamber_fan_speed: 50,
@@ -172,6 +173,7 @@ fn workshop_p1s() -> PrinterState {
         },
         speeds: Speeds {
             speed_level: 2,
+            speed_magnitude: Some(100),
             fan_speed: 0,
             aux_fan_speed: 0,
             chamber_fan_speed: 0,
