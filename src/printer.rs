@@ -427,10 +427,6 @@ pub struct AmsTray {
     pub nozzle_temp_max: Option<i32>,
     /// Whether this tray slot has a physical tray inserted (from tray_exist_bits)
     pub tray_exists: bool,
-    /// Whether this tray contains Bambu-branded (BBL) filament (from tray_is_bbl_bits)
-    pub is_bbl: bool,
-    /// Whether RFID reading is complete for this tray (from tray_read_done_bits)
-    pub read_done: bool,
     /// Whether RFID is currently being read for this tray (from tray_reading_bits)
     pub reading: bool,
 }
@@ -1053,16 +1049,6 @@ impl PrinterState {
                                             .and_then(|s| s.parse().ok()),
                                         tray_exists: tray_bit_set(
                                             ams_state.tray_exist_bits,
-                                            unit_id,
-                                            tray_id,
-                                        ),
-                                        is_bbl: tray_bit_set(
-                                            ams_state.tray_is_bbl_bits,
-                                            unit_id,
-                                            tray_id,
-                                        ),
-                                        read_done: tray_bit_set(
-                                            ams_state.tray_read_done_bits,
                                             unit_id,
                                             tray_id,
                                         ),
@@ -2892,16 +2878,6 @@ mod tests {
             assert!(trays[2].tray_exists);
             assert!(trays[3].tray_exists);
 
-            // Trays 0 and 2 are BBL (0x05 = 0b0101)
-            assert!(trays[0].is_bbl);
-            assert!(!trays[1].is_bbl);
-            assert!(trays[2].is_bbl);
-            assert!(!trays[3].is_bbl);
-
-            // All done reading
-            assert!(trays[0].read_done);
-            assert!(trays[3].read_done);
-
             // None currently reading
             assert!(!trays[0].reading);
         }
@@ -2968,7 +2944,6 @@ mod tests {
 
             let trays = &state.ams.as_ref().unwrap().units[0].trays;
             assert!(trays[0].tray_exists);
-            assert!(trays[0].is_bbl);
 
             // Second update: only tray_now changes, no bitmask fields
             // Bitmask values should persist from cached state
@@ -2997,9 +2972,7 @@ mod tests {
             // Bitmask-derived booleans should persist
             let trays = &state.ams.as_ref().unwrap().units[0].trays;
             assert!(trays[0].tray_exists);
-            assert!(trays[0].is_bbl);
             assert!(trays[1].tray_exists);
-            assert!(trays[1].is_bbl);
         }
 
         #[test]
@@ -3030,8 +3003,6 @@ mod tests {
             let ams = state.ams.as_ref().unwrap();
             let tray = &ams.units[0].trays[0];
             assert!(tray.tray_exists);
-            assert!(tray.is_bbl);
-            assert!(tray.read_done);
             assert!(!tray.reading);
         }
     }

@@ -82,8 +82,6 @@ fn office_x1c() -> PrinterState {
                         nozzle_temp_min: Some(190),
                         nozzle_temp_max: Some(230),
                         tray_exists: true,
-                        is_bbl: true,
-                        read_done: true,
                         ..Default::default()
                     },
                     AmsTray {
@@ -95,8 +93,6 @@ fn office_x1c() -> PrinterState {
                         nozzle_temp_min: Some(230),
                         nozzle_temp_max: Some(260),
                         tray_exists: true,
-                        is_bbl: true,
-                        read_done: true,
                         ..Default::default()
                     },
                     AmsTray {
@@ -108,8 +104,6 @@ fn office_x1c() -> PrinterState {
                         nozzle_temp_min: Some(220),
                         nozzle_temp_max: Some(250),
                         tray_exists: true,
-                        is_bbl: true,
-                        read_done: true,
                         ..Default::default()
                     },
                     AmsTray {
@@ -121,8 +115,6 @@ fn office_x1c() -> PrinterState {
                         nozzle_temp_min: Some(240),
                         nozzle_temp_max: Some(270),
                         tray_exists: true,
-                        is_bbl: true,
-                        read_done: true,
                         ..Default::default()
                     },
                 ],
@@ -207,8 +199,6 @@ fn workshop_p1s() -> PrinterState {
                         nozzle_temp_min: Some(190),
                         nozzle_temp_max: Some(230),
                         tray_exists: true,
-                        is_bbl: true,
-                        read_done: true,
                         ..Default::default()
                     },
                     AmsTray {
@@ -220,8 +210,6 @@ fn workshop_p1s() -> PrinterState {
                         nozzle_temp_min: Some(230),
                         nozzle_temp_max: Some(260),
                         tray_exists: true,
-                        is_bbl: true,
-                        read_done: true,
                         ..Default::default()
                     },
                     AmsTray {
