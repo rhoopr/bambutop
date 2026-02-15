@@ -239,7 +239,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                     tray_spans.push(Span::styled("██", color_style));
                     tray_spans.push(Span::raw(" "));
 
-                    if tray.is_bbl && tray.read_done {
+                    if tray.is_bbl && tray.read_done && !tray.reading {
                         tray_spans.push(Span::styled("[BBL] ", Style::new().fg(Color::DarkGray)));
                     }
 
