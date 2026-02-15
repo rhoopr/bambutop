@@ -159,6 +159,12 @@ pub struct PrintStatus {
     pub print_type: String,
     /// Current print stage code from printer (stg_cur field)
     pub stage_code: i32,
+    /// Human-readable failure reason (e.g., "Nozzle temperature malfunction")
+    pub fail_reason: String,
+    /// Print error code from `print_error` MQTT field
+    pub print_error: u32,
+    /// Print error code from `mc_print_error_code` MQTT field
+    pub mc_print_error_code: u32,
 }
 
 /// Printer stage codes from `stg_cur` MQTT field.
@@ -280,6 +286,32 @@ impl PrintStatus {
     /// Returns true if a print job is currently active (running or paused).
     pub fn is_active(&self) -> bool {
         matches!(self.gcode_state.as_str(), "RUNNING" | "PAUSE")
+    }
+
+    /// Returns a failure description if the print has failed.
+    ///
+    /// Prioritizes `fail_reason` (human-readable) from the printer, then falls back
+    /// to error codes. Returns `None` if not in a failed state or no error info is available.
+    pub fn failure_description(&self) -> Option<Cow<'_, str>> {
+        if self.gcode_state != "FAILED" {
+            return None;
+        }
+
+        // Prefer the human-readable fail_reason from the printer
+        if !self.fail_reason.is_empty() {
+            return Some(Cow::Borrowed(&self.fail_reason));
+        }
+
+        // Fall back to error codes if available
+        let error_code = if self.mc_print_error_code != 0 {
+            self.mc_print_error_code
+        } else if self.print_error != 0 {
+            self.print_error
+        } else {
+            return None;
+        };
+
+        Some(Cow::Owned(format!("Error code: 0x{:08X}", error_code)))
     }
 
     /// Determines the current print phase based on stage code and temperatures.
@@ -506,6 +538,12 @@ pub struct PrintReport {
     /// Common values: 0=idle, 1=auto-leveling, 2=heatbed preheating,
     /// 6=cleaning nozzle, 7=calibrating extrusion, 14=printing, etc.
     pub stg_cur: Option<i32>,
+    /// Human-readable failure reason from the printer
+    pub fail_reason: Option<String>,
+    /// Numeric print error code
+    pub print_error: Option<serde_json::Value>,
+    /// Numeric error code from the motion controller
+    pub mc_print_error_code: Option<serde_json::Value>,
 
     // Temperatures
     pub nozzle_temper: Option<f32>,
@@ -714,6 +752,20 @@ impl PrinterState {
         }
         if let Some(v) = report.stg_cur {
             self.print_status.stage_code = v;
+        }
+        if let Some(v) = &report.fail_reason {
+            self.print_status.fail_reason.clone_from(v);
+        }
+        if let Some(v) = &report.print_error {
+            let code = v.as_u64().unwrap_or(0) as u32;
+            self.print_status.print_error = code;
+        }
+        if let Some(v) = &report.mc_print_error_code {
+            let code = v
+                .as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                .unwrap_or(0) as u32;
+            self.print_status.mc_print_error_code = code;
         }
 
         // Temperatures
@@ -2064,6 +2116,75 @@ mod tests {
         }
     }
 
+    mod failure_description_tests {
+        use super::*;
+
+        #[test]
+        fn returns_none_when_not_failed() {
+            let status = PrintStatus {
+                gcode_state: "RUNNING".to_string(),
+                fail_reason: "Some reason".to_string(),
+                ..Default::default()
+            };
+            assert!(status.failure_description().is_none());
+        }
+
+        #[test]
+        fn returns_none_when_failed_with_no_info() {
+            let status = PrintStatus {
+                gcode_state: "FAILED".to_string(),
+                ..Default::default()
+            };
+            assert!(status.failure_description().is_none());
+        }
+
+        #[test]
+        fn returns_fail_reason_when_available() {
+            let status = PrintStatus {
+                gcode_state: "FAILED".to_string(),
+                fail_reason: "Nozzle temperature malfunction".to_string(),
+                print_error: 0x0500_0100,
+                ..Default::default()
+            };
+            let desc = status.failure_description().unwrap();
+            assert_eq!(desc.as_ref(), "Nozzle temperature malfunction");
+        }
+
+        #[test]
+        fn falls_back_to_mc_print_error_code() {
+            let status = PrintStatus {
+                gcode_state: "FAILED".to_string(),
+                mc_print_error_code: 0x0500_0400,
+                ..Default::default()
+            };
+            let desc = status.failure_description().unwrap();
+            assert_eq!(desc.as_ref(), "Error code: 0x05000400");
+        }
+
+        #[test]
+        fn falls_back_to_print_error() {
+            let status = PrintStatus {
+                gcode_state: "FAILED".to_string(),
+                print_error: 0x0300_0100,
+                ..Default::default()
+            };
+            let desc = status.failure_description().unwrap();
+            assert_eq!(desc.as_ref(), "Error code: 0x03000100");
+        }
+
+        #[test]
+        fn prefers_mc_print_error_code_over_print_error() {
+            let status = PrintStatus {
+                gcode_state: "FAILED".to_string(),
+                print_error: 0x0300_0100,
+                mc_print_error_code: 0x0500_0400,
+                ..Default::default()
+            };
+            let desc = status.failure_description().unwrap();
+            assert_eq!(desc.as_ref(), "Error code: 0x05000400");
+        }
+    }
+
     /// Tests that deserialize JSON strings into MqttMessage, exercising the
     /// same code path as real MQTT messages from the printer. This catches
     /// type mismatches between JSON wire format and Rust struct definitions
@@ -2290,6 +2411,37 @@ mod tests {
             assert_eq!(tray.sub_brand, "Bambu PLA Basic");
             assert_eq!(tray.nozzle_temp_min, Some(190));
             assert_eq!(tray.nozzle_temp_max, Some(230));
+        }
+
+        #[test]
+        fn parses_fail_reason_and_error_codes() {
+            let state = parse_and_apply(
+                r#"{"print": {
+                    "gcode_state": "FAILED",
+                    "fail_reason": "Nozzle temperature malfunction",
+                    "print_error": 83886336,
+                    "mc_print_error_code": "50331904"
+                }}"#,
+            );
+            assert_eq!(state.print_status.gcode_state, "FAILED");
+            assert_eq!(
+                state.print_status.fail_reason,
+                "Nozzle temperature malfunction"
+            );
+            assert_eq!(state.print_status.print_error, 83_886_336);
+            assert_eq!(state.print_status.mc_print_error_code, 50_331_904);
+        }
+
+        #[test]
+        fn parses_error_codes_as_integers() {
+            let state = parse_and_apply(
+                r#"{"print": {
+                    "print_error": 100,
+                    "mc_print_error_code": 200
+                }}"#,
+            );
+            assert_eq!(state.print_status.print_error, 100);
+            assert_eq!(state.print_status.mc_print_error_code, 200);
         }
 
         #[test]

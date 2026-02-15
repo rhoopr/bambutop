@@ -13,6 +13,7 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 - Job name, layer count, elapsed time, time remaining, and ETA clock time
 - Current print phase: Heating Bed, Heating Nozzle, Auto-Leveling, Printing, etc.
 - Visual progress bar with percentage
+- Print failure reason and error codes when a job fails
 
 **Temperatures & Fans**
 - Nozzle, bed, and chamber temperatures with visual gauges (°C or °F)
