@@ -201,17 +201,13 @@ impl MqttClient {
                             let _ = event_tx
                                 .send(MqttEvent::Error {
                                     printer_index,
-                                    message: format!(
-                                        "Connection rejected: {:?}",
-                                        connack.code
-                                    ),
+                                    message: format!("Connection rejected: {:?}", connack.code),
                                 })
                                 .await;
                             continue;
                         }
                         {
-                            let mut state_guard =
-                                state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
                             state_guard.connected = true;
                         }
                         // Re-subscribe on every (re)connection. The broker drops
@@ -229,17 +225,10 @@ impl MqttClient {
                             r#"{"info":{"sequence_id":"0","command":"get_version"}}"#,
                         ] {
                             let _ = event_client
-                                .publish(
-                                    &event_request_topic,
-                                    QoS::AtMostOnce,
-                                    false,
-                                    payload,
-                                )
+                                .publish(&event_request_topic, QoS::AtMostOnce, false, payload)
                                 .await;
                         }
-                        let _ = event_tx
-                            .send(MqttEvent::Connected { printer_index })
-                            .await;
+                        let _ = event_tx.send(MqttEvent::Connected { printer_index }).await;
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
                         if let Ok(payload) = std::str::from_utf8(&publish.payload) {
@@ -262,8 +251,7 @@ impl MqttClient {
                     Ok(_) => {}
                     Err(e) => {
                         {
-                            let mut state_guard =
-                                state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
                             state_guard.connected = false;
                         }
                         let _ = event_tx
@@ -334,12 +322,8 @@ impl MqttClient {
     ) -> Result<()> {
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                qos,
-                false,
-                payload.to_string(),
-            ),
+            self.client
+                .publish(&self.request_topic, qos, false, payload.to_string()),
         )
         .await
         .with_context(|| format!("{action} timed out"))?
@@ -354,8 +338,7 @@ impl MqttClient {
     pub async fn refresh(&self) -> Result<()> {
         tokio::time::timeout(
             OPERATION_TIMEOUT,
-            self.client
-                .subscribe(&self.report_topic, QoS::AtMostOnce),
+            self.client.subscribe(&self.report_topic, QoS::AtMostOnce),
         )
         .await
         .context("Subscribe operation timed out")?
