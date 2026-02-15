@@ -260,13 +260,16 @@ fn render_info_row(
     last_update: Option<Instant>,
     area: Rect,
 ) {
-    // HMS status
-    let (hms_text, hms_color) = if !is_connected || !state.hms_received {
-        ("--", Color::DarkGray)
+    // Show failure reason or HMS status
+    let failure = state.print_status.failure_description();
+    let (info_text, info_color): (Cow<'_, str>, Color) = if let Some(ref f) = failure {
+        (Cow::Borrowed(f.as_ref()), Color::Red)
+    } else if !is_connected || !state.hms_received {
+        (Cow::Borrowed("--"), Color::DarkGray)
     } else if state.hms_errors.is_empty() {
-        ("OK", Color::Green)
+        (Cow::Borrowed("OK"), Color::Green)
     } else {
-        ("ERR", Color::Red)
+        (Cow::Borrowed("ERR"), Color::Red)
     };
 
     // Last update time
@@ -285,11 +288,18 @@ fn render_info_row(
         None => Color::DarkGray,
     };
 
-    // Left: HMS status
-    let left = Line::from(vec![
-        Span::raw(" HMS:"),
-        Span::styled(hms_text, Style::new().fg(hms_color)),
-    ]);
+    // Left: HMS status or failure reason
+    let left = if failure.is_some() {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(info_text.into_owned(), Style::new().fg(info_color)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw(" HMS:"),
+            Span::styled(info_text.into_owned(), Style::new().fg(info_color)),
+        ])
+    };
 
     // Right: Last update
     let right = Line::from(vec![

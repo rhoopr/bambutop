@@ -109,9 +109,17 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
     ];
 
     let mut lines = vec![status_line];
-    if cam_spans.len() > 1 {
+
+    // Show failure reason when print has failed
+    if let Some(failure) = printer_state.print_status.failure_description() {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(failure.into_owned(), Style::new().fg(Color::Red)),
+        ]));
+    } else if cam_spans.len() > 1 {
         lines.push(Line::from(cam_spans));
     }
+
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
