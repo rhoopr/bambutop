@@ -1,7 +1,9 @@
 use crate::config::PrinterConfig;
 use crate::printer::{MqttMessage, PrinterState};
 use anyhow::{Context, Result};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
+use rumqttc::{
+    AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport,
+};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
@@ -23,7 +25,7 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default channel capacity when creating a standalone event channel (no shared sender)
 const FALLBACK_CHANNEL_CAPACITY: usize = 100;
 
-/// Capacity of the internal rumqttc event queue for buffering incoming MQTT packets
+/// Capacity of the internal rumqttc request channel between AsyncClient and EventLoop
 const MQTT_EVENT_QUEUE_CAPACITY: usize = 10;
 
 /// Certificate verifier that accepts any certificate (for self-signed Bambu certs)
@@ -103,6 +105,8 @@ pub struct MqttClient {
     client: AsyncClient,
     /// Handle to the background event loop task for graceful shutdown
     _event_loop_handle: JoinHandle<()>,
+    /// Cached report topic for re-subscription (e.g., "device/{serial}/report")
+    report_topic: String,
     /// Cached request topic to avoid repeated format! allocations
     request_topic: String,
     /// Atomic counter for generating unique sequence IDs for MQTT commands
@@ -169,22 +173,73 @@ impl MqttClient {
             Arc::new(tls_config),
         )));
 
+        // Build topic strings before spawning so the event loop can re-subscribe
+        // after reconnections. MQTT brokers discard subscriptions when
+        // clean_session=true (the rumqttc default), so every reconnect needs a
+        // fresh subscribe + pushall to restore the data stream.
+        let report_topic = format!("device/{}/report", config.serial);
+        let request_topic = format!("device/{}/request", config.serial);
+
         let (client, mut eventloop) = AsyncClient::new(mqtt_opts, MQTT_EVENT_QUEUE_CAPACITY);
 
-        // Clone for the spawned task
+        // Clones/moves for the spawned event-loop task
         let state_clone = Arc::clone(&state);
-        let tx_clone = tx;
+        let event_tx = tx;
+        let event_client = client.clone();
+        let event_report_topic = report_topic.clone();
+        let event_request_topic = request_topic.clone();
 
         // Spawn event loop handler
         let event_loop_handle = tokio::spawn(async move {
             loop {
                 match eventloop.poll().await {
-                    Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    Ok(Event::Incoming(Packet::ConnAck(connack))) => {
+                        // MQTT §3.2: check the return code before treating the
+                        // session as usable. A non-Success code means the broker
+                        // rejected us (bad credentials, not authorised, etc.).
+                        if connack.code != ConnectReturnCode::Success {
+                            let _ = event_tx
+                                .send(MqttEvent::Error {
+                                    printer_index,
+                                    message: format!(
+                                        "Connection rejected: {:?}",
+                                        connack.code
+                                    ),
+                                })
+                                .await;
+                            continue;
+                        }
                         {
-                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard =
+                                state_clone.lock().expect("state lock poisoned");
                             state_guard.connected = true;
                         }
-                        let _ = tx_clone.send(MqttEvent::Connected { printer_index }).await;
+                        // Re-subscribe on every (re)connection. The broker drops
+                        // all subscriptions for clean sessions, so without this
+                        // the client stays connected but never receives data after
+                        // a reconnect — the root cause of stale printer state.
+                        let _ = event_client
+                            .subscribe(&event_report_topic, QoS::AtMostOnce)
+                            .await;
+                        // Request full printer state and version info so we have
+                        // current data immediately rather than waiting for the
+                        // next periodic push.
+                        for payload in [
+                            r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#,
+                            r#"{"info":{"sequence_id":"0","command":"get_version"}}"#,
+                        ] {
+                            let _ = event_client
+                                .publish(
+                                    &event_request_topic,
+                                    QoS::AtMostOnce,
+                                    false,
+                                    payload,
+                                )
+                                .await;
+                        }
+                        let _ = event_tx
+                            .send(MqttEvent::Connected { printer_index })
+                            .await;
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
                         if let Ok(payload) = std::str::from_utf8(&publish.payload) {
@@ -194,11 +249,11 @@ impl MqttClient {
                                         state_clone.lock().expect("state lock poisoned");
                                     state_guard.update_from_message(&msg);
                                 }
-                                let _ = tx_clone
+                                let _ = event_tx
                                     .send(MqttEvent::StateUpdated { printer_index })
                                     .await;
                             }
-                            // Many messages may not match our structure - that's ok
+                            // Many messages may not match our structure — that's ok
                         }
                     }
                     Ok(Event::Incoming(Packet::SubAck(_))) => {
@@ -207,13 +262,14 @@ impl MqttClient {
                     Ok(_) => {}
                     Err(e) => {
                         {
-                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard =
+                                state_clone.lock().expect("state lock poisoned");
                             state_guard.connected = false;
                         }
-                        let _ = tx_clone
+                        let _ = event_tx
                             .send(MqttEvent::Disconnected { printer_index })
                             .await;
-                        let _ = tx_clone
+                        let _ = event_tx
                             .send(MqttEvent::Error {
                                 printer_index,
                                 message: format!(
@@ -230,8 +286,11 @@ impl MqttClient {
             }
         });
 
-        // Subscribe to printer reports
-        let report_topic = format!("device/{}/report", config.serial);
+        // Subscribe before ConnAck is processed — rumqttc queues the SUBSCRIBE
+        // packet and sends it once the CONNECT handshake completes.  The ConnAck
+        // handler above will re-subscribe on *re*connections (clean_session=true
+        // drops subscriptions), but the initial subscribe must happen here to
+        // match the timing that the printer's broker expects.
         tokio::time::timeout(
             OPERATION_TIMEOUT,
             client.subscribe(&report_topic, QoS::AtMostOnce),
@@ -240,13 +299,11 @@ impl MqttClient {
         .context("Subscribe operation timed out")?
         .context("Failed to subscribe to printer topic")?;
 
-        // Cache the request topic to avoid repeated format! allocations
-        let request_topic = format!("device/{}/request", config.serial);
-
         Ok((
             Self {
                 client,
                 _event_loop_handle: event_loop_handle,
+                report_topic,
                 request_topic,
                 sequence_id: AtomicU64::new(1),
             },
@@ -263,53 +320,77 @@ impl MqttClient {
         self.sequence_id.fetch_add(1, Ordering::Relaxed).to_string()
     }
 
-    pub async fn request_full_status(&self) -> Result<()> {
-        let payload = serde_json::json!({
-            "pushing": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "pushall"
-            }
-        });
-
+    /// Publishes a JSON command to the printer's request topic.
+    ///
+    /// Wraps the common timeout → publish → error-context pattern used by
+    /// every command method. `qos` should be [`QoS::AtMostOnce`] for
+    /// non-critical status requests and [`QoS::AtLeastOnce`] for
+    /// user-initiated actions (pause, stop, etc.) where delivery matters.
+    async fn publish_command(
+        &self,
+        payload: serde_json::Value,
+        qos: QoS,
+        action: &str,
+    ) -> Result<()> {
         tokio::time::timeout(
             OPERATION_TIMEOUT,
             self.client.publish(
                 &self.request_topic,
-                QoS::AtMostOnce,
+                qos,
                 false,
                 payload.to_string(),
             ),
         )
         .await
-        .context("Publish operation timed out")?
-        .context("Failed to request full status")?;
-
+        .with_context(|| format!("{action} timed out"))?
+        .with_context(|| format!("Failed to {action}"))?;
         Ok(())
+    }
+
+    /// Re-subscribes to the printer's report topic and requests a full status push.
+    ///
+    /// Use this to manually recover from stale connections where the subscription
+    /// may have been silently lost without triggering a disconnect.
+    pub async fn refresh(&self) -> Result<()> {
+        tokio::time::timeout(
+            OPERATION_TIMEOUT,
+            self.client
+                .subscribe(&self.report_topic, QoS::AtMostOnce),
+        )
+        .await
+        .context("Subscribe operation timed out")?
+        .context("Failed to re-subscribe to printer topic")?;
+
+        self.request_full_status().await
+    }
+
+    pub async fn request_full_status(&self) -> Result<()> {
+        self.publish_command(
+            serde_json::json!({
+                "pushing": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "pushall"
+                }
+            }),
+            QoS::AtMostOnce,
+            "request full status",
+        )
+        .await
     }
 
     /// Requests firmware/hardware version information from the printer.
     pub async fn request_version_info(&self) -> Result<()> {
-        let payload = serde_json::json!({
-            "info": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "get_version"
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "info": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "get_version"
+                }
+            }),
+            QoS::AtMostOnce,
+            "request version info",
         )
         .await
-        .context("Publish operation timed out")?
-        .context("Failed to request version info")?;
-
-        Ok(())
     }
 
     /// Sets the print speed level on the printer.
@@ -317,165 +398,97 @@ impl MqttClient {
     /// # Arguments
     /// * `level` - Speed level: 1=Silent, 2=Standard, 3=Sport, 4=Ludicrous
     pub async fn set_speed_level(&self, level: u8) -> Result<()> {
-        let payload = serde_json::json!({
-            "print": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "print_speed",
-                "param": level.to_string()
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "print": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "print_speed",
+                    "param": level.to_string()
+                }
+            }),
+            QoS::AtLeastOnce,
+            "set speed level",
         )
         .await
-        .context("Set speed operation timed out")?
-        .context("Failed to set speed level")?;
-
-        Ok(())
     }
 
     /// Sets the chamber light on or off.
-    ///
-    /// # Arguments
-    /// * `on` - true to turn the light on, false to turn it off
     pub async fn set_chamber_light(&self, on: bool) -> Result<()> {
-        let mode = if on { "on" } else { "off" };
-        let payload = serde_json::json!({
-            "system": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "ledctrl",
-                "led_node": "chamber_light",
-                "led_mode": mode
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "system": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "ledctrl",
+                    "led_node": "chamber_light",
+                    "led_mode": if on { "on" } else { "off" }
+                }
+            }),
+            QoS::AtLeastOnce,
+            "set chamber light",
         )
         .await
-        .context("Set chamber light operation timed out")?
-        .context("Failed to set chamber light")?;
-
-        Ok(())
     }
 
     /// Sets the work light on or off.
-    ///
-    /// # Arguments
-    /// * `on` - true to turn the light on, false to turn it off
     pub async fn set_work_light(&self, on: bool) -> Result<()> {
-        let mode = if on { "on" } else { "off" };
-        let payload = serde_json::json!({
-            "system": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "ledctrl",
-                "led_node": "work_light",
-                "led_mode": mode
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "system": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "ledctrl",
+                    "led_node": "work_light",
+                    "led_mode": if on { "on" } else { "off" }
+                }
+            }),
+            QoS::AtLeastOnce,
+            "set work light",
         )
         .await
-        .context("Set work light operation timed out")?
-        .context("Failed to set work light")?;
-
-        Ok(())
     }
 
     /// Pauses the current print job.
     pub async fn pause_print(&self) -> Result<()> {
-        let payload = serde_json::json!({
-            "print": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "pause"
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "print": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "pause"
+                }
+            }),
+            QoS::AtLeastOnce,
+            "pause print",
         )
         .await
-        .context("Pause print operation timed out")?
-        .context("Failed to pause print")?;
-
-        Ok(())
     }
 
     /// Resumes a paused print job.
     pub async fn resume_print(&self) -> Result<()> {
-        let payload = serde_json::json!({
-            "print": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "resume"
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "print": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "resume"
+                }
+            }),
+            QoS::AtLeastOnce,
+            "resume print",
         )
         .await
-        .context("Resume print operation timed out")?
-        .context("Failed to resume print")?;
-
-        Ok(())
     }
 
     /// Stops/cancels the current print job.
     pub async fn stop_print(&self) -> Result<()> {
-        let payload = serde_json::json!({
-            "print": {
-                "sequence_id": self.next_sequence_id(),
-                "command": "stop"
-            }
-        });
-
-        tokio::time::timeout(
-            OPERATION_TIMEOUT,
-            self.client.publish(
-                &self.request_topic,
-                QoS::AtMostOnce,
-                false,
-                payload.to_string(),
-            ),
+        self.publish_command(
+            serde_json::json!({
+                "print": {
+                    "sequence_id": self.next_sequence_id(),
+                    "command": "stop"
+                }
+            }),
+            QoS::AtLeastOnce,
+            "stop print",
         )
         .await
-        .context("Stop print operation timed out")?
-        .context("Failed to stop print")?;
-
-        Ok(())
     }
 
     /// Sends a disconnect message to the MQTT broker.

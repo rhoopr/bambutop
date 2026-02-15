@@ -22,13 +22,18 @@ use printer::{speed_level_to_name, speed_level_to_percent};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Flag to track whether terminal is in raw mode (for panic hook)
 static TERMINAL_IN_RAW_MODE: AtomicBool = AtomicBool::new(false);
 
 /// UI refresh rate - how often to poll for events and redraw
 const UI_TICK_RATE: Duration = Duration::from_millis(250);
+
+/// Interval between periodic full status requests to all printers.
+/// Acts as a safety net: if individual MQTT pushes are silently lost
+/// (QoS 0 offers no delivery guarantee), this ensures state is refreshed.
+const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
 /// MQTT event channel capacity per printer
 const CHANNEL_CAPACITY_PER_PRINTER: usize = 100;
@@ -280,6 +285,8 @@ async fn run_app(
     tick_rate: Duration,
     mqtt_clients: &[MqttClient],
 ) -> Result<()> {
+    let mut last_status_refresh = Instant::now();
+
     loop {
         // Expire old toasts before rendering
         app.expire_toasts();
@@ -289,6 +296,17 @@ async fn run_app(
         // Check for MQTT events (non-blocking)
         while let Ok(event) = mqtt_rx.try_recv() {
             app.handle_mqtt_event(event);
+        }
+
+        // Periodic full status refresh — guards against silently stale connections
+        // where MQTT messages stop arriving without triggering a disconnect.
+        if !mqtt_clients.is_empty()
+            && last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL
+        {
+            for client in mqtt_clients {
+                let _ = client.request_full_status().await;
+            }
+            last_status_refresh = Instant::now();
         }
 
         // Check for keyboard events
@@ -507,6 +525,28 @@ async fn run_app(
                                             app.pause_pending = false;
                                         }
                                     }
+                                }
+                            }
+                        }
+                        // Force refresh: re-subscribe and request full status from all printers
+                        KeyCode::Char('r') => {
+                            if mqtt_clients.is_empty() {
+                                app.toast_info("Demo mode");
+                            } else {
+                                let mut ok = 0usize;
+                                for client in mqtt_clients.iter() {
+                                    if client.refresh().await.is_ok() {
+                                        ok += 1;
+                                    }
+                                }
+                                if ok == mqtt_clients.len() {
+                                    app.toast_success("Refreshed all printers");
+                                } else {
+                                    app.toast_warning(format!(
+                                        "Refreshed {}/{}",
+                                        ok,
+                                        mqtt_clients.len()
+                                    ));
                                 }
                             }
                         }

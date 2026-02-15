@@ -127,6 +127,7 @@ access_code = "87654321"
 | `Shift+Tab` | Previous printer |
 | `1-9` | Jump to printer by number |
 | `a` | Aggregate overview |
+| `r` | Refresh all printers |
 | `u` | Toggle °C / °F |
 | `x` | Lock/unlock controls |
 | `l` | Toggle chamber light |
