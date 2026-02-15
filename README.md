@@ -29,6 +29,8 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 - Humidity grade (A-E) per AMS unit
 - Filament colors, materials, brand, and remaining percentages
 - Recommended nozzle temperature range per filament
+- Accurate slot detection via AMS bitmask fields (tray presence, BBL filament, RFID status)
+- Distinct display states: material info, "Reading..." (RFID scan), "Empty" (slot present), "---" (no slot)
 
 **System Info**
 - HMS (Health Management System) alerts with severity and timestamps

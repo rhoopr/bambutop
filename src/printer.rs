@@ -27,6 +27,16 @@ const AMS_TRAYS_PER_UNIT: u8 = 4;
 /// Maximum number of AMS units supported (0-3, i.e. up to 4 units).
 const MAX_AMS_UNITS: u8 = 4;
 
+/// Number of tray bit positions per AMS unit in bitmask fields.
+const TRAY_BITS_PER_UNIT: u8 = 4;
+
+/// Bit offset for AMS HT (Hub Tray) in bitmask fields.
+/// The AMS HT uses unit_id 128, mapped to bit position 16.
+const AMS_HT_TRAY_BIT_OFFSET: u32 = 16;
+
+/// Unit ID used by the AMS Hub Tray (AMS HT / external spool hub).
+const AMS_HT_UNIT_ID: u8 = 128;
+
 /// Maximum fan speed value in Bambu's 0-15 scale.
 const BAMBU_FAN_SCALE_MAX: u32 = 15;
 /// Percentage scale maximum.
@@ -379,6 +389,16 @@ pub struct AmsState {
     pub current_tray: Option<u8>,
     /// The currently active AMS unit index (0-3)
     pub current_unit: Option<u8>,
+    /// Cached bitmask: which AMS units are physically present
+    pub(crate) ams_exist_bits: u32,
+    /// Cached bitmask: which tray slots have a tray inserted
+    pub(crate) tray_exist_bits: u32,
+    /// Cached bitmask: which trays contain Bambu-branded (BBL) filament
+    pub(crate) tray_is_bbl_bits: u32,
+    /// Cached bitmask: which trays have completed RFID tag reading
+    pub(crate) tray_read_done_bits: u32,
+    /// Cached bitmask: which trays are currently reading their RFID tag
+    pub(crate) tray_reading_bits: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -405,6 +425,14 @@ pub struct AmsTray {
     pub nozzle_temp_min: Option<i32>,
     /// Recommended maximum nozzle temperature
     pub nozzle_temp_max: Option<i32>,
+    /// Whether this tray slot has a physical tray inserted (from tray_exist_bits)
+    pub tray_exists: bool,
+    /// Whether this tray contains Bambu-branded (BBL) filament (from tray_is_bbl_bits)
+    pub is_bbl: bool,
+    /// Whether RFID reading is complete for this tray (from tray_read_done_bits)
+    pub read_done: bool,
+    /// Whether RFID is currently being read for this tray (from tray_reading_bits)
+    pub reading: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -547,10 +575,20 @@ pub struct LightReport {
     pub mode: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct AmsReport {
     pub ams: Option<Vec<AmsUnitReport>>,
     pub tray_now: Option<String>,
+    /// Hex bitmask: which AMS units are physically present
+    pub ams_exist_bits: Option<String>,
+    /// Hex bitmask: which tray slots have a tray inserted
+    pub tray_exist_bits: Option<String>,
+    /// Hex bitmask: which trays contain Bambu-branded (BBL) filament
+    pub tray_is_bbl_bits: Option<String>,
+    /// Hex bitmask: which trays have completed RFID tag reading
+    pub tray_read_done_bits: Option<String>,
+    /// Hex bitmask: which trays are currently reading their RFID tag
+    pub tray_reading_bits: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -964,10 +1002,28 @@ impl PrinterState {
             }
         }
 
+        // Parse bitmask fields, falling back to cached values when absent
+        if let Some(v) = &report.ams_exist_bits {
+            ams_state.ams_exist_bits = parse_hex_bitmask(v);
+        }
+        if let Some(v) = &report.tray_exist_bits {
+            ams_state.tray_exist_bits = parse_hex_bitmask(v);
+        }
+        if let Some(v) = &report.tray_is_bbl_bits {
+            ams_state.tray_is_bbl_bits = parse_hex_bitmask(v);
+        }
+        if let Some(v) = &report.tray_read_done_bits {
+            ams_state.tray_read_done_bits = parse_hex_bitmask(v);
+        }
+        if let Some(v) = &report.tray_reading_bits {
+            ams_state.tray_reading_bits = parse_hex_bitmask(v);
+        }
+
         if let Some(units) = &report.ams {
             ams_state.units = units
                 .iter()
                 .map(|u| {
+                    let unit_id: u8 = u.id.parse().unwrap_or(0);
                     let trays: SmallVec<[AmsTray; 4]> = u
                         .tray
                         .as_ref()
@@ -975,9 +1031,10 @@ impl PrinterState {
                             trays
                                 .iter()
                                 .map(|t| {
+                                    let tray_id: u8 = t.id.parse().unwrap_or(0);
                                     let color_str = t.tray_color.as_deref().unwrap_or_default();
                                     AmsTray {
-                                        id: t.id.parse().unwrap_or(0),
+                                        id: tray_id,
                                         material: t.tray_type.clone().unwrap_or_default(),
                                         remaining: t.remain.unwrap_or(0).max(0) as u8,
                                         parsed_color: parse_hex_color(color_str),
@@ -994,6 +1051,26 @@ impl PrinterState {
                                             .nozzle_temp_max
                                             .as_deref()
                                             .and_then(|s| s.parse().ok()),
+                                        tray_exists: tray_bit_set(
+                                            ams_state.tray_exist_bits,
+                                            unit_id,
+                                            tray_id,
+                                        ),
+                                        is_bbl: tray_bit_set(
+                                            ams_state.tray_is_bbl_bits,
+                                            unit_id,
+                                            tray_id,
+                                        ),
+                                        read_done: tray_bit_set(
+                                            ams_state.tray_read_done_bits,
+                                            unit_id,
+                                            tray_id,
+                                        ),
+                                        reading: tray_bit_set(
+                                            ams_state.tray_reading_bits,
+                                            unit_id,
+                                            tray_id,
+                                        ),
                                     }
                                 })
                                 .collect()
@@ -1005,7 +1082,7 @@ impl PrinterState {
                     let is_lite = trays.len() <= 2 && !trays.is_empty();
 
                     AmsUnit {
-                        id: u.id.parse().unwrap_or(0),
+                        id: unit_id,
                         humidity: u.humidity.parse().unwrap_or(0),
                         trays,
                         is_lite,
@@ -1042,6 +1119,31 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
 
     Some((r, g, b))
+}
+
+/// Parses a hex string (e.g., "3C" or "0x3C") into a u32 bitmask.
+///
+/// Returns 0 on invalid input, which is safe since 0 means "no bits set".
+fn parse_hex_bitmask(hex: &str) -> u32 {
+    let hex = hex.trim_start_matches("0x").trim_start_matches("0X");
+    u32::from_str_radix(hex, 16).unwrap_or(0)
+}
+
+/// Tests if a specific tray's bit is set in a bitmask.
+///
+/// Standard AMS units (0-3) use bit position `unit_id * 4 + tray_id`.
+/// AMS HT (unit 128) is mapped to bit offset 16.
+/// Returns false for out-of-range bit positions (>= 32).
+fn tray_bit_set(bitmask: u32, unit_id: u8, tray_id: u8) -> bool {
+    let bit_offset = if unit_id == AMS_HT_UNIT_ID {
+        AMS_HT_TRAY_BIT_OFFSET + u32::from(tray_id)
+    } else {
+        u32::from(unit_id) * u32::from(TRAY_BITS_PER_UNIT) + u32::from(tray_id)
+    };
+    if bit_offset >= 32 {
+        return false;
+    }
+    bitmask & (1 << bit_offset) != 0
 }
 
 fn format_hms_code(code: u32) -> Cow<'static, str> {
@@ -1655,6 +1757,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("5".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1672,6 +1775,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("0".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1689,6 +1793,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("254".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1706,6 +1811,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("255".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1741,6 +1847,7 @@ mod tests {
                         },
                     ]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1789,6 +1896,7 @@ mod tests {
                         },
                     ]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1826,6 +1934,7 @@ mod tests {
                         },
                     ]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1852,6 +1961,7 @@ mod tests {
                         ..Default::default()
                     }]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1879,18 +1989,15 @@ mod tests {
                         humidity: 4,
                         trays: smallvec![AmsTray {
                             id: 0,
-
                             material: "PLA".to_string(),
                             remaining: 100,
-                            parsed_color: None,
-                            sub_brand: String::new(),
-                            nozzle_temp_min: None,
-                            nozzle_temp_max: None,
+                            ..Default::default()
                         }],
                         is_lite: false,
                     }],
                     current_unit: None,
                     current_tray: None,
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -1908,15 +2015,13 @@ mod tests {
                             id: 0,
                             material: "PETG".to_string(),
                             remaining: 85,
-                            parsed_color: None,
-                            sub_brand: String::new(),
-                            nozzle_temp_min: None,
-                            nozzle_temp_max: None,
+                            ..Default::default()
                         }],
                         is_lite: false,
                     }],
                     current_unit: Some(0),
                     current_tray: Some(0),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -1933,16 +2038,13 @@ mod tests {
                         trays: smallvec![AmsTray {
                             id: 0,
                             material: String::new(), // Empty tray
-                            remaining: 0,
-                            parsed_color: None,
-                            sub_brand: String::new(),
-                            nozzle_temp_min: None,
-                            nozzle_temp_max: None,
+                            ..Default::default()
                         }],
                         is_lite: false,
                     }],
                     current_unit: Some(0),
                     current_tray: Some(0),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -1959,13 +2061,9 @@ mod tests {
                             humidity: 4,
                             trays: smallvec![AmsTray {
                                 id: 0,
-
                                 material: "PLA".to_string(),
                                 remaining: 100,
-                                parsed_color: None,
-                                sub_brand: String::new(),
-                                nozzle_temp_min: None,
-                                nozzle_temp_max: None,
+                                ..Default::default()
                             }],
                             is_lite: false,
                         },
@@ -1974,19 +2072,16 @@ mod tests {
                             humidity: 3,
                             trays: smallvec![AmsTray {
                                 id: 0,
-
                                 material: "ABS".to_string(),
                                 remaining: 50,
-                                parsed_color: None,
-                                sub_brand: String::new(),
-                                nozzle_temp_min: None,
-                                nozzle_temp_max: None,
+                                ..Default::default()
                             }],
                             is_lite: false,
                         },
                     ],
                     current_unit: Some(1), // Second unit selected
                     current_tray: Some(0),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -2645,6 +2740,299 @@ mod tests {
             };
             let temps = Temperatures::default();
             assert_eq!(status.print_phase(&temps), Some("Paused"));
+        }
+    }
+
+    mod parse_hex_bitmask_tests {
+        use super::*;
+
+        #[test]
+        fn parses_valid_hex() {
+            assert_eq!(parse_hex_bitmask("0F"), 0x0F);
+            assert_eq!(parse_hex_bitmask("FF"), 0xFF);
+            assert_eq!(parse_hex_bitmask("3C"), 0x3C);
+        }
+
+        #[test]
+        fn parses_with_0x_prefix() {
+            assert_eq!(parse_hex_bitmask("0x3C"), 0x3C);
+            assert_eq!(parse_hex_bitmask("0XFF"), 0xFF);
+        }
+
+        #[test]
+        fn parses_uppercase_and_lowercase() {
+            assert_eq!(parse_hex_bitmask("ff"), 0xFF);
+            assert_eq!(parse_hex_bitmask("FF"), 0xFF);
+            assert_eq!(parse_hex_bitmask("aB"), 0xAB);
+        }
+
+        #[test]
+        fn returns_zero_for_invalid_input() {
+            assert_eq!(parse_hex_bitmask(""), 0);
+            assert_eq!(parse_hex_bitmask("not_hex"), 0);
+            assert_eq!(parse_hex_bitmask("GG"), 0);
+        }
+
+        #[test]
+        fn parses_large_values() {
+            assert_eq!(parse_hex_bitmask("FFFFFFFF"), 0xFFFF_FFFF);
+            assert_eq!(parse_hex_bitmask("10000"), 0x10000);
+        }
+    }
+
+    mod tray_bit_set_tests {
+        use super::*;
+
+        #[test]
+        fn standard_unit_0_tray_0() {
+            // Bit 0 set: unit 0, tray 0
+            assert!(tray_bit_set(0b0001, 0, 0));
+            assert!(!tray_bit_set(0b0001, 0, 1));
+        }
+
+        #[test]
+        fn standard_unit_0_all_trays() {
+            // Bits 0-3 set: unit 0, all 4 trays
+            assert!(tray_bit_set(0b1111, 0, 0));
+            assert!(tray_bit_set(0b1111, 0, 1));
+            assert!(tray_bit_set(0b1111, 0, 2));
+            assert!(tray_bit_set(0b1111, 0, 3));
+        }
+
+        #[test]
+        fn standard_unit_1_trays() {
+            // Unit 1 starts at bit 4
+            // 0xF0 = 0b1111_0000 => unit 1, all trays
+            assert!(tray_bit_set(0xF0, 1, 0));
+            assert!(tray_bit_set(0xF0, 1, 1));
+            assert!(tray_bit_set(0xF0, 1, 2));
+            assert!(tray_bit_set(0xF0, 1, 3));
+            // Unit 0 should not be set
+            assert!(!tray_bit_set(0xF0, 0, 0));
+        }
+
+        #[test]
+        fn ams_ht_unit_128_maps_to_offset_16() {
+            // AMS HT (unit 128) tray 0 => bit 16
+            assert!(tray_bit_set(1 << 16, AMS_HT_UNIT_ID, 0));
+            assert!(!tray_bit_set(1 << 16, AMS_HT_UNIT_ID, 1));
+            // AMS HT tray 1 => bit 17
+            assert!(tray_bit_set(1 << 17, AMS_HT_UNIT_ID, 1));
+        }
+
+        #[test]
+        fn out_of_range_returns_false() {
+            // Standard unit 8 would need bit 32, which is out of u32 range
+            assert!(!tray_bit_set(0xFFFF_FFFF, 8, 0));
+            // AMS HT tray 16 would need bit 32
+            assert!(!tray_bit_set(0xFFFF_FFFF, AMS_HT_UNIT_ID, 16));
+        }
+
+        #[test]
+        fn zero_bitmask_always_false() {
+            assert!(!tray_bit_set(0, 0, 0));
+            assert!(!tray_bit_set(0, 1, 3));
+            assert!(!tray_bit_set(0, AMS_HT_UNIT_ID, 0));
+        }
+    }
+
+    mod ams_bitmask_integration_tests {
+        use super::*;
+
+        #[test]
+        fn bitmask_fields_set_tray_booleans() {
+            let mut state = PrinterState::default();
+
+            // tray_exist_bits: 0x0F = all 4 trays exist in unit 0
+            // tray_is_bbl_bits: 0x05 = trays 0 and 2 are BBL
+            // tray_read_done_bits: 0x0F = all done
+            // tray_reading_bits: 0x00 = none reading
+            let report = AmsReport {
+                tray_now: Some("0".to_string()),
+                tray_exist_bits: Some("0F".to_string()),
+                tray_is_bbl_bits: Some("05".to_string()),
+                tray_read_done_bits: Some("0F".to_string()),
+                tray_reading_bits: Some("00".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "4".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            tray_type: Some("PLA".to_string()),
+                            ..Default::default()
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            tray_type: Some("PETG".to_string()),
+                            ..Default::default()
+                        },
+                        AmsTrayReport {
+                            id: "2".to_string(),
+                            tray_type: Some("ABS".to_string()),
+                            ..Default::default()
+                        },
+                        AmsTrayReport {
+                            id: "3".to_string(),
+                            ..Default::default()
+                        },
+                    ]),
+                }]),
+                ..Default::default()
+            };
+
+            state.update_ams(&report);
+
+            let ams = state.ams.as_ref().unwrap();
+            let trays = &ams.units[0].trays;
+
+            // All 4 trays exist
+            assert!(trays[0].tray_exists);
+            assert!(trays[1].tray_exists);
+            assert!(trays[2].tray_exists);
+            assert!(trays[3].tray_exists);
+
+            // Trays 0 and 2 are BBL (0x05 = 0b0101)
+            assert!(trays[0].is_bbl);
+            assert!(!trays[1].is_bbl);
+            assert!(trays[2].is_bbl);
+            assert!(!trays[3].is_bbl);
+
+            // All done reading
+            assert!(trays[0].read_done);
+            assert!(trays[3].read_done);
+
+            // None currently reading
+            assert!(!trays[0].reading);
+        }
+
+        #[test]
+        fn reading_bits_set_correctly() {
+            let mut state = PrinterState::default();
+
+            // Tray 1 is currently reading (bit 1)
+            let report = AmsReport {
+                tray_reading_bits: Some("02".to_string()),
+                tray_exist_bits: Some("0F".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "4".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            ..Default::default()
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            ..Default::default()
+                        },
+                    ]),
+                }]),
+                ..Default::default()
+            };
+
+            state.update_ams(&report);
+
+            let trays = &state.ams.as_ref().unwrap().units[0].trays;
+            assert!(!trays[0].reading);
+            assert!(trays[1].reading);
+        }
+
+        #[test]
+        fn bitmask_values_persist_across_partial_updates() {
+            let mut state = PrinterState::default();
+
+            // First update: set bitmask values with tray data
+            let report1 = AmsReport {
+                tray_exist_bits: Some("0F".to_string()),
+                tray_is_bbl_bits: Some("03".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "4".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            tray_type: Some("PLA".to_string()),
+                            ..Default::default()
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            tray_type: Some("PETG".to_string()),
+                            ..Default::default()
+                        },
+                    ]),
+                }]),
+                ..Default::default()
+            };
+            state.update_ams(&report1);
+
+            let trays = &state.ams.as_ref().unwrap().units[0].trays;
+            assert!(trays[0].tray_exists);
+            assert!(trays[0].is_bbl);
+
+            // Second update: only tray_now changes, no bitmask fields
+            // Bitmask values should persist from cached state
+            let report2 = AmsReport {
+                tray_now: Some("1".to_string()),
+                ams: Some(vec![AmsUnitReport {
+                    id: "0".to_string(),
+                    humidity: "4".to_string(),
+                    tray: Some(vec![
+                        AmsTrayReport {
+                            id: "0".to_string(),
+                            tray_type: Some("PLA".to_string()),
+                            ..Default::default()
+                        },
+                        AmsTrayReport {
+                            id: "1".to_string(),
+                            tray_type: Some("PETG".to_string()),
+                            ..Default::default()
+                        },
+                    ]),
+                }]),
+                ..Default::default()
+            };
+            state.update_ams(&report2);
+
+            // Bitmask-derived booleans should persist
+            let trays = &state.ams.as_ref().unwrap().units[0].trays;
+            assert!(trays[0].tray_exists);
+            assert!(trays[0].is_bbl);
+            assert!(trays[1].tray_exists);
+            assert!(trays[1].is_bbl);
+        }
+
+        #[test]
+        fn json_with_bitmask_fields_deserializes() {
+            let json = r#"{"print": {"ams": {
+                "tray_now": "0",
+                "ams_exist_bits": "01",
+                "tray_exist_bits": "0F",
+                "tray_is_bbl_bits": "05",
+                "tray_read_done_bits": "0F",
+                "tray_reading_bits": "00",
+                "ams": [{
+                    "id": "0",
+                    "humidity": "4",
+                    "tray": [{
+                        "id": "0",
+                        "tray_type": "PLA",
+                        "tray_color": "FF0000FF",
+                        "remain": 85
+                    }]
+                }]
+            }}}"#;
+
+            let msg: MqttMessage = serde_json::from_str(json).unwrap();
+            let mut state = PrinterState::default();
+            state.update_from_message(&msg);
+
+            let ams = state.ams.as_ref().unwrap();
+            let tray = &ams.units[0].trays[0];
+            assert!(tray.tray_exists);
+            assert!(tray.is_bbl);
+            assert!(tray.read_done);
+            assert!(!tray.reading);
         }
     }
 }

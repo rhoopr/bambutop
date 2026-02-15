@@ -300,9 +300,7 @@ async fn run_app(
 
         // Periodic full status refresh — guards against silently stale connections
         // where MQTT messages stop arriving without triggering a disconnect.
-        if !mqtt_clients.is_empty()
-            && last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL
-        {
+        if !mqtt_clients.is_empty() && last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
             for client in mqtt_clients {
                 let _ = client.request_full_status().await;
             }

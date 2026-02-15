@@ -185,18 +185,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                 let is_active_tray = is_active_unit && ams.current_tray == Some(tray.id);
                 let marker = if is_active_tray { "▶" } else { " " };
 
-                // Show percentage if reported, hide if unknown (0 often means not reported)
-                let remaining_text = if tray.remaining == 0 || tray.material.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}%", tray.remaining)
-                };
-
-                let remaining_color = match tray.remaining {
-                    0 => Color::DarkGray,
-                    1..=20 => Color::Yellow,
-                    _ => Color::Green,
-                };
+                let has_material = !tray.material.is_empty();
 
                 let slot_style = if is_active_tray {
                     Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
@@ -204,60 +193,83 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                     Style::new().fg(Color::DarkGray)
                 };
 
-                let has_material = !tray.material.is_empty();
-                let material_display = if has_material { &tray.material } else { "---" };
-
-                let material_style = if !has_material {
-                    Style::new().fg(Color::DarkGray)
-                } else if is_active_tray {
-                    Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(Color::White)
-                };
-
-                let remaining_style = if is_active_tray {
-                    Style::new()
-                        .fg(remaining_color)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(remaining_color)
-                };
-
-                let color_style = if is_active_tray {
-                    Style::new().fg(color).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(color)
-                };
-
-                let temp_range_text = match (tray.nozzle_temp_min, tray.nozzle_temp_max) {
-                    (Some(min), Some(max)) if min > 0 && max > 0 => {
-                        format!(" ({}-{}°C)", min, max)
-                    }
-                    _ => String::new(),
-                };
-
                 let mut tray_spans = vec![Span::styled(
                     format!("    {}[{}] ", marker, tray.id + 1),
                     slot_style,
                 )];
-                if has_material {
+
+                if tray.reading {
+                    // RFID scan in progress
+                    tray_spans.push(Span::raw("   "));
+                    tray_spans.push(Span::styled("Reading...", Style::new().fg(Color::Yellow)));
+                } else if has_material {
+                    // Show material with color swatch, percentage, and temp range
+                    let remaining_text = if tray.remaining == 0 {
+                        String::new()
+                    } else {
+                        format!(" {}%", tray.remaining)
+                    };
+
+                    let remaining_color = match tray.remaining {
+                        0 => Color::DarkGray,
+                        1..=20 => Color::Yellow,
+                        _ => Color::Green,
+                    };
+
+                    let material_style = if is_active_tray {
+                        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(Color::White)
+                    };
+
+                    let remaining_style = if is_active_tray {
+                        Style::new()
+                            .fg(remaining_color)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(remaining_color)
+                    };
+
+                    let color_style = if is_active_tray {
+                        Style::new().fg(color).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(color)
+                    };
+
                     tray_spans.push(Span::styled("██", color_style));
                     tray_spans.push(Span::raw(" "));
-                } else {
+
+                    if tray.is_bbl && tray.read_done {
+                        tray_spans.push(Span::styled("[BBL] ", Style::new().fg(Color::DarkGray)));
+                    }
+
+                    tray_spans.push(Span::styled(&*tray.material, material_style));
+                    tray_spans.push(Span::styled(remaining_text, remaining_style));
+
+                    let temp_range_text = match (tray.nozzle_temp_min, tray.nozzle_temp_max) {
+                        (Some(min), Some(max)) if min > 0 && max > 0 => {
+                            format!(" ({}-{}°C)", min, max)
+                        }
+                        _ => String::new(),
+                    };
+                    if !temp_range_text.is_empty() {
+                        tray_spans.push(Span::styled(
+                            temp_range_text,
+                            Style::new().fg(Color::DarkGray),
+                        ));
+                    }
+                } else if tray.tray_exists {
+                    // Slot exists but no filament data
                     tray_spans.push(Span::raw("   "));
+                    tray_spans.push(Span::styled("Empty", Style::new().fg(Color::DarkGray)));
+                } else {
+                    // Slot not present
+                    tray_spans.push(Span::raw("   "));
+                    tray_spans.push(Span::styled("---", Style::new().fg(Color::DarkGray)));
                 }
-                tray_spans.extend([
-                    Span::styled(material_display, material_style),
-                    Span::styled(remaining_text, remaining_style),
-                ]);
-                if !temp_range_text.is_empty() {
-                    tray_spans.push(Span::styled(
-                        temp_range_text,
-                        Style::new().fg(Color::DarkGray),
-                    ));
-                }
+
                 lines.push(Line::from(tray_spans));
-                if !tray.sub_brand.is_empty() {
+                if has_material && !tray.sub_brand.is_empty() {
                     lines.push(Line::from(vec![
                         Span::raw("            "),
                         Span::styled(&*tray.sub_brand, Style::new().fg(Color::DarkGray)),

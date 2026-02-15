@@ -81,6 +81,10 @@ fn office_x1c() -> PrinterState {
                         sub_brand: "Bambu PLA Basic".to_string(),
                         nozzle_temp_min: Some(190),
                         nozzle_temp_max: Some(230),
+                        tray_exists: true,
+                        is_bbl: true,
+                        read_done: true,
+                        ..Default::default()
                     },
                     AmsTray {
                         id: 1,
@@ -90,6 +94,10 @@ fn office_x1c() -> PrinterState {
                         sub_brand: "Bambu PETG Basic".to_string(),
                         nozzle_temp_min: Some(230),
                         nozzle_temp_max: Some(260),
+                        tray_exists: true,
+                        is_bbl: true,
+                        read_done: true,
+                        ..Default::default()
                     },
                     AmsTray {
                         id: 2,
@@ -99,6 +107,10 @@ fn office_x1c() -> PrinterState {
                         sub_brand: "Bambu TPU 95A".to_string(),
                         nozzle_temp_min: Some(220),
                         nozzle_temp_max: Some(250),
+                        tray_exists: true,
+                        is_bbl: true,
+                        read_done: true,
+                        ..Default::default()
                     },
                     AmsTray {
                         id: 3,
@@ -108,12 +120,17 @@ fn office_x1c() -> PrinterState {
                         sub_brand: "Bambu ABS".to_string(),
                         nozzle_temp_min: Some(240),
                         nozzle_temp_max: Some(270),
+                        tray_exists: true,
+                        is_bbl: true,
+                        read_done: true,
+                        ..Default::default()
                     },
                 ],
                 is_lite: false,
             }],
             current_tray: Some(0),
             current_unit: Some(0),
+            ..Default::default()
         }),
         lights: LightState {
             chamber_light: true,
@@ -189,6 +206,10 @@ fn workshop_p1s() -> PrinterState {
                         sub_brand: "Bambu PLA Basic".to_string(),
                         nozzle_temp_min: Some(190),
                         nozzle_temp_max: Some(230),
+                        tray_exists: true,
+                        is_bbl: true,
+                        read_done: true,
+                        ..Default::default()
                     },
                     AmsTray {
                         id: 1,
@@ -198,30 +219,27 @@ fn workshop_p1s() -> PrinterState {
                         sub_brand: "Bambu PETG Basic".to_string(),
                         nozzle_temp_min: Some(230),
                         nozzle_temp_max: Some(260),
+                        tray_exists: true,
+                        is_bbl: true,
+                        read_done: true,
+                        ..Default::default()
                     },
                     AmsTray {
                         id: 2,
-                        material: String::new(),
-                        remaining: 0,
-                        parsed_color: None,
-                        sub_brand: String::new(),
-                        nozzle_temp_min: None,
-                        nozzle_temp_max: None,
+                        tray_exists: true,
+                        ..Default::default()
                     },
                     AmsTray {
                         id: 3,
-                        material: String::new(),
-                        remaining: 0,
-                        parsed_color: None,
-                        sub_brand: String::new(),
-                        nozzle_temp_min: None,
-                        nozzle_temp_max: None,
+                        tray_exists: true,
+                        ..Default::default()
                     },
                 ],
                 is_lite: false,
             }],
             current_tray: Some(0),
             current_unit: Some(0),
+            ..Default::default()
         }),
         lights: LightState {
             chamber_light: false,
