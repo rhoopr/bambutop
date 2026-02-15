@@ -3,7 +3,7 @@
 //! Displays print speed, chamber light, and print job controls (pause/cancel)
 //! in a clean two-line layout with keyboard shortcuts.
 
-use crate::printer::{speed_level_to_name, PrinterState};
+use crate::printer::{speed_level_to_name, GcodeState, PrinterState};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -11,10 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-
-/// Print states where pause/resume/cancel actions are available.
-const PRINT_STATE_RUNNING: &str = "RUNNING";
-const PRINT_STATE_PAUSED: &str = "PAUSE";
+use std::borrow::Cow;
 
 /// Renders the printer controls panel.
 ///
@@ -46,9 +43,8 @@ pub fn render(
     let speed_magnitude = printer_state.speeds.speed_magnitude;
 
     let light_on = printer_state.lights.chamber_light;
-    let gcode_state = printer_state.print_status.gcode_state.as_str();
-    let is_paused = gcode_state == PRINT_STATE_PAUSED;
-    let has_active_job = gcode_state == PRINT_STATE_RUNNING || is_paused;
+    let is_paused = printer_state.print_status.gcode_state == GcodeState::Pause;
+    let has_active_job = printer_state.print_status.gcode_state == GcodeState::Running || is_paused;
 
     // Colors based on state
     let key_style = if controls_locked {
@@ -66,9 +62,9 @@ pub fn render(
 
     // Line 1: Speed on left, Light on right
     // Calculate widths for right-alignment
-    let speed_text = match speed_magnitude {
-        Some(mag) => format!("{} ({}%)", speed_name, mag),
-        None => speed_name.to_string(),
+    let speed_text: Cow<'_, str> = match speed_magnitude {
+        Some(mag) => Cow::Owned(format!("{speed_name} ({mag}%)")),
+        None => Cow::Borrowed(speed_name),
     };
     let light_text = if light_on { "ON " } else { "OFF" };
     // Left: "  +/- Speed: {speed}" = 2 + 3 + 8 + speed_text.len()
@@ -150,7 +146,7 @@ pub fn render(
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!("{} print job? ", action),
+                format!("{action} print job? "),
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
             Span::styled("␣", Style::new().fg(Color::Yellow)),
@@ -185,7 +181,7 @@ pub fn render(
         Line::from(vec![
             Span::raw("  "),
             Span::styled("␣", action_key_style),
-            Span::styled(format!(" {}  ", pause_label), label_style),
+            Span::styled(format!(" {pause_label}  "), label_style),
             Span::styled("c", cancel_key_style),
             Span::styled(" Cancel Print", label_style),
             Span::raw(" ".repeat(padding2)),

@@ -10,15 +10,16 @@ use anyhow::{Context, Result};
 use app::{App, ViewMode};
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use futures::StreamExt;
 
 /// Maximum number of printers that can be navigated via number keys (1-9)
 const MAX_PRINTER_HOTKEYS: usize = 9;
 use mqtt::MqttClient;
-use printer::{speed_level_to_name, speed_level_to_percent};
+use printer::{speed_level_to_name, speed_level_to_percent, GcodeState};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,7 +157,7 @@ async fn main() -> Result<()> {
     let _ = terminal.show_cursor();
 
     if let Err(err) = result {
-        eprintln!("Error: {}", err);
+        eprintln!("Error: {err}");
     }
 
     Ok(())
@@ -178,19 +179,25 @@ async fn run_main(
     let (event_tx, mut mqtt_rx) =
         tokio::sync::mpsc::channel(CHANNEL_CAPACITY_PER_PRINTER * printer_count);
 
-    // Connect to all printers
-    let mut mqtt_clients = Vec::with_capacity(printer_count);
-    let mut printer_states = Vec::with_capacity(printer_count);
-
-    for (index, printer_config) in all_printers.into_iter().enumerate() {
-        let (client, state, _) =
-            MqttClient::connect(printer_config, index, Some(event_tx.clone())).await?;
-        mqtt_clients.push(client);
-        printer_states.push(state);
-    }
+    // Connect to all printers concurrently
+    let connect_futures: Vec<_> = all_printers
+        .iter()
+        .enumerate()
+        .map(|(index, config)| MqttClient::connect(config, index, Some(event_tx.clone())))
+        .collect();
 
     // Drop the original sender so the channel closes when all clients disconnect
     drop(event_tx);
+
+    let results = futures::future::join_all(connect_futures).await;
+
+    let mut mqtt_clients = Vec::with_capacity(printer_count);
+    let mut printer_states = Vec::with_capacity(printer_count);
+    for result in results {
+        let (client, state, _) = result?;
+        mqtt_clients.push(client);
+        printer_states.push(state);
+    }
 
     // Create app with all printer states
     let mut app = App::new_multi(printer_states);
@@ -251,8 +258,8 @@ async fn run_demo() -> Result<()> {
     }
 
     // Create a dummy channel (sender dropped immediately, try_recv returns empty)
-    let (_tx, mut mqtt_rx) = tokio::sync::mpsc::channel(1);
-    drop(_tx);
+    let (tx, mut mqtt_rx) = tokio::sync::mpsc::channel(1);
+    drop(tx);
 
     let result = run_app(&mut terminal, &mut app, &mut mqtt_rx, UI_TICK_RATE, &[]).await;
 
@@ -267,7 +274,7 @@ async fn run_demo() -> Result<()> {
     let _ = terminal.show_cursor();
 
     if let Err(err) = result {
-        eprintln!("Error: {}", err);
+        eprintln!("Error: {err}");
     }
 
     Ok(())
@@ -286,38 +293,35 @@ async fn run_app(
     mqtt_clients: &[MqttClient],
 ) -> Result<()> {
     let mut last_status_refresh = Instant::now();
+    let mut event_stream = EventStream::new();
+    let mut tick_interval = tokio::time::interval(tick_rate);
 
     loop {
-        // Expire old toasts before rendering
+        // Expire old toasts and refresh dirty printer snapshots before rendering
         app.expire_toasts();
+        app.refresh_snapshots();
 
         terminal.draw(|f| ui::render(f, app))?;
 
-        // Check for MQTT events (non-blocking)
-        while let Ok(event) = mqtt_rx.try_recv() {
-            app.handle_mqtt_event(event);
-        }
-
-        // Periodic full status refresh — guards against silently stale connections
-        // where MQTT messages stop arriving without triggering a disconnect.
-        if !mqtt_clients.is_empty() && last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
-            for client in mqtt_clients {
-                let _ = client.request_full_status().await;
+        // Wait for next event: MQTT message, keyboard input, or tick
+        tokio::select! {
+            Some(mqtt_event) = mqtt_rx.recv() => {
+                app.handle_mqtt_event(mqtt_event);
+                // Drain any additional pending events
+                while let Ok(event) = mqtt_rx.try_recv() {
+                    app.handle_mqtt_event(event);
+                }
             }
-            last_status_refresh = Instant::now();
-        }
+            Some(Ok(event)) = event_stream.next() => {
+                if let Event::Key(key) = event {
+                    if key.kind == KeyEventKind::Press {
+                        // If help overlay is shown, any key closes it
+                        if app.show_help {
+                            app.show_help = false;
+                            continue;
+                        }
 
-        // Check for keyboard events
-        if event::poll(tick_rate)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    // If help overlay is shown, any key closes it
-                    if app.show_help {
-                        app.show_help = false;
-                        continue;
-                    }
-
-                    match key.code {
+                        match key.code {
                         // Help overlay toggle
                         KeyCode::Char('?') | KeyCode::Char('h') => {
                             app.show_help = true;
@@ -353,7 +357,7 @@ async fn run_app(
                             } else {
                                 "Fahrenheit"
                             };
-                            app.toast_info(format!("Temperature: {}", unit));
+                            app.toast_info(format!("Temperature: {unit}"));
                         }
                         KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
                             if !app.controls_locked {
@@ -375,9 +379,9 @@ async fn run_app(
                                         );
                                         let client = &mqtt_clients[app.active_printer_index()];
                                         if let Err(e) = client.set_speed_level(new_level).await {
-                                            app.toast_error(format!("Speed change failed: {}", e));
+                                            app.toast_error(format!("Speed change failed: {e}"));
                                         } else {
-                                            app.toast_success(format!("Speed: {}", speed_display));
+                                            app.toast_success(format!("Speed: {speed_display}"));
                                         }
                                     }
                                 }
@@ -403,9 +407,9 @@ async fn run_app(
                                         );
                                         let client = &mqtt_clients[app.active_printer_index()];
                                         if let Err(e) = client.set_speed_level(new_level).await {
-                                            app.toast_error(format!("Speed change failed: {}", e));
+                                            app.toast_error(format!("Speed change failed: {e}"));
                                         } else {
-                                            app.toast_success(format!("Speed: {}", speed_display));
+                                            app.toast_success(format!("Speed: {speed_display}"));
                                         }
                                     }
                                 }
@@ -426,9 +430,9 @@ async fn run_app(
                                     let status = if new_state { "ON" } else { "OFF" };
                                     let client = &mqtt_clients[app.active_printer_index()];
                                     if let Err(e) = client.set_chamber_light(new_state).await {
-                                        app.toast_error(format!("Light toggle failed: {}", e));
+                                        app.toast_error(format!("Light toggle failed: {e}"));
                                     } else {
-                                        app.toast_success(format!("Light: {}", status));
+                                        app.toast_success(format!("Light: {status}"));
                                     }
                                 }
                             }
@@ -448,9 +452,9 @@ async fn run_app(
                                     let status = if new_state { "ON" } else { "OFF" };
                                     let client = &mqtt_clients[app.active_printer_index()];
                                     if let Err(e) = client.set_work_light(new_state).await {
-                                        app.toast_error(format!("Work light toggle failed: {}", e));
+                                        app.toast_error(format!("Work light toggle failed: {e}"));
                                     } else {
-                                        app.toast_success(format!("Work light: {}", status));
+                                        app.toast_success(format!("Work light: {status}"));
                                     }
                                 }
                             }
@@ -463,8 +467,8 @@ async fn run_app(
                                     let (is_running, is_paused) = {
                                         let state =
                                             app.printer_state.lock().expect("state lock poisoned");
-                                        let gcode = state.print_status.gcode_state.as_str();
-                                        (gcode == "RUNNING", gcode == "PAUSE")
+                                        let gcode = state.print_status.gcode_state;
+                                        (gcode == GcodeState::Running, gcode == GcodeState::Pause)
                                     };
                                     let has_active_job = is_running || is_paused;
                                     if has_active_job {
@@ -474,16 +478,14 @@ async fn run_app(
                                                 match client.pause_print().await {
                                                     Ok(_) => app.toast_warning("Print paused"),
                                                     Err(e) => app.toast_error(format!(
-                                                        "Failed to pause: {}",
-                                                        e
+                                                        "Failed to pause: {e}"
                                                     )),
                                                 }
                                             } else if is_paused {
                                                 match client.resume_print().await {
                                                     Ok(_) => app.toast_success("Print resumed"),
                                                     Err(e) => app.toast_error(format!(
-                                                        "Failed to resume: {}",
-                                                        e
+                                                        "Failed to resume: {e}"
                                                     )),
                                                 }
                                             }
@@ -504,18 +506,18 @@ async fn run_app(
                                     let has_active_job = {
                                         let state =
                                             app.printer_state.lock().expect("state lock poisoned");
-                                        let gcode = state.print_status.gcode_state.as_str();
-                                        gcode == "RUNNING" || gcode == "PAUSE"
+                                        matches!(
+                                            state.print_status.gcode_state,
+                                            GcodeState::Running | GcodeState::Pause
+                                        )
                                     };
                                     if has_active_job {
                                         if app.cancel_pending {
                                             let client = &mqtt_clients[app.active_printer_index()];
                                             match client.stop_print().await {
                                                 Ok(_) => app.toast_error("Print cancelled"),
-                                                Err(e) => app.toast_error(format!(
-                                                    "Failed to cancel: {}",
-                                                    e
-                                                )),
+                                                Err(e) => app
+                                                    .toast_error(format!("Failed to cancel: {e}")),
                                             }
                                             app.cancel_pending = false;
                                         } else {
@@ -597,8 +599,7 @@ async fn run_app(
                                         let last = printer_count - 1;
                                         app.set_active_printer(last);
                                         app.toast_info(format!(
-                                            "Printer {}/{}",
-                                            printer_count, printer_count
+                                            "Printer {printer_count}/{printer_count}"
                                         ));
                                     }
                                     ViewMode::Single => {
@@ -634,7 +635,20 @@ async fn run_app(
                         _ => {}
                     }
                 }
+                }
             }
+            _ = tick_interval.tick() => {
+                // Tick: just re-render (happens at top of loop)
+            }
+        }
+
+        // Periodic full status refresh — guards against silently stale connections
+        // where MQTT messages stop arriving without triggering a disconnect.
+        if !mqtt_clients.is_empty() && last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
+            for client in mqtt_clients {
+                let _ = client.request_full_status().await;
+            }
+            last_status_refresh = Instant::now();
         }
 
         if app.should_quit {

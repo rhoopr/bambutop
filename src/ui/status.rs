@@ -12,7 +12,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use smallvec::SmallVec;
 
 /// Estimated line count for AMS display pre-allocation
 const AMS_LINES_ESTIMATE: usize = 20;
@@ -77,7 +76,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines: SmallVec<[Line; AMS_LINES_ESTIMATE]> = SmallVec::new();
+    let mut lines: Vec<Line> = Vec::with_capacity(AMS_LINES_ESTIMATE);
 
     if let Some(ams) = &printer_state.ams {
         let num_units = ams.units.len();
@@ -112,7 +111,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                 Style::new().fg(Color::DarkGray)
             };
 
-            let mut header_spans: SmallVec<[Span; 2]> = SmallVec::new();
+            let mut header_spans: Vec<Span> = Vec::with_capacity(2);
             if is_active_unit {
                 header_spans.push(Span::styled("▶", Style::new().fg(Color::White)));
             } else {
@@ -120,7 +119,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
             }
             header_spans.push(Span::styled(unit_label, unit_style));
 
-            lines.push(Line::from(header_spans.into_vec()));
+            lines.push(Line::from(header_spans));
 
             // Humidity line with grade widget (skip for AMS Lite which has no humidity sensor)
             if !unit.is_lite {
@@ -134,7 +133,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
                     _ => '?',
                 };
 
-                let mut humidity_spans: SmallVec<[Span; 14]> = SmallVec::new();
+                let mut humidity_spans: Vec<Span> = Vec::with_capacity(14);
                 humidity_spans.push(Span::styled(
                     "   Humidity: ",
                     Style::new().fg(Color::DarkGray),
@@ -165,7 +164,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
 
                 humidity_spans.push(Span::styled(" ◆", Style::new().fg(Color::DarkGray)));
                 humidity_spans.push(Span::styled(" Wet ", Style::new().fg(Color::DarkGray)));
-                lines.push(Line::from(humidity_spans.into_vec()));
+                lines.push(Line::from(humidity_spans));
             }
 
             // Filament header
@@ -231,7 +230,7 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
 
                 let temp_range_text = match (tray.nozzle_temp_min, tray.nozzle_temp_max) {
                     (Some(min), Some(max)) if min > 0 && max > 0 => {
-                        format!(" ({}-{}°C)", min, max)
+                        format!(" ({min}-{max}°C)")
                     }
                     _ => String::new(),
                 };
@@ -272,5 +271,5 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
         )));
     }
 
-    frame.render_widget(Paragraph::new(lines.into_vec()), inner);
+    frame.render_widget(Paragraph::new(lines), inner);
 }

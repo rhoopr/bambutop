@@ -6,7 +6,6 @@
 //! [`PrinterState::update_from_message`].
 
 use serde::Deserialize;
-use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::time::Instant;
 
@@ -117,8 +116,7 @@ pub struct PrinterState {
     /// WiFi signal strength (e.g., "-45dBm")
     pub wifi_signal: String,
     /// Active HMS (Health Management System) errors
-    /// Uses SmallVec since there are typically 0-3 errors at a time
-    pub hms_errors: SmallVec<[HmsError; 4]>,
+    pub hms_errors: Vec<HmsError>,
     /// Whether HMS data has been received from the printer.
     /// Used to distinguish "no data yet" from "no errors".
     pub hms_received: bool,
@@ -145,6 +143,45 @@ pub struct PrinterState {
 /// If current temp is more than this amount below target, we consider it "heating".
 const HEATING_THRESHOLD: f32 = 5.0;
 
+/// Printer gcode state machine states.
+///
+/// Represents the current state of the printer as reported via MQTT.
+/// Using an enum instead of raw strings enables exhaustive matching
+/// and eliminates string comparisons in hot paths.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GcodeState {
+    /// No state received yet (initial/connecting)
+    #[default]
+    Unknown,
+    /// Printer is idle
+    Idle,
+    /// Print job is being prepared
+    Prepare,
+    /// Print job is actively running
+    Running,
+    /// Print job is paused
+    Pause,
+    /// Print job has finished
+    Finish,
+    /// Print job has failed
+    Failed,
+}
+
+impl GcodeState {
+    /// Parse a gcode state from the MQTT string representation.
+    pub fn from_mqtt(s: &str) -> Self {
+        match s {
+            "IDLE" => Self::Idle,
+            "PREPARE" => Self::Prepare,
+            "RUNNING" => Self::Running,
+            "PAUSE" => Self::Pause,
+            "FINISH" => Self::Finish,
+            "FAILED" => Self::Failed,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PrintStatus {
     pub gcode_file: String,
@@ -155,7 +192,7 @@ pub struct PrintStatus {
     pub layer_num: u32,
     pub total_layers: u32,
     pub remaining_time_mins: u32,
-    pub gcode_state: String,
+    pub gcode_state: GcodeState,
     pub print_type: String,
     /// Current print stage code from printer (stg_cur field)
     pub stage_code: i32,
@@ -224,8 +261,8 @@ impl PrintStatus {
     ///
     /// Returns `Cow::Borrowed` when possible to avoid allocations.
     pub fn display_name(&self) -> Cow<'_, str> {
-        let subtask = self.clean_name(&self.subtask_name);
-        let gcode = self.clean_name(&self.gcode_file);
+        let subtask = Self::clean_name(&self.subtask_name);
+        let gcode = Self::clean_name(&self.gcode_file);
 
         // If subtask_name looks like an actual name (not slicer settings), use it
         if !subtask.is_empty() && !Self::looks_like_slicer_profile(&subtask) {
@@ -246,7 +283,7 @@ impl PrintStatus {
 
         // For cloud prints, prefix with "Cloud:" to make it clear
         if self.print_type == "cloud" {
-            Cow::Owned(format!("Cloud: {}", profile))
+            Cow::Owned(format!("Cloud: {profile}"))
         } else {
             profile
         }
@@ -254,7 +291,7 @@ impl PrintStatus {
 
     /// Strips common file extensions from a name.
     /// Returns `Cow::Borrowed` when no trimming is needed.
-    fn clean_name<'a>(&self, name: &'a str) -> Cow<'a, str> {
+    fn clean_name(name: &str) -> Cow<'_, str> {
         let trimmed = name.trim();
         let cleaned = trimmed
             .trim_end_matches(".3mf")
@@ -270,22 +307,34 @@ impl PrintStatus {
 
     /// Checks if a name looks like slicer profile settings rather than a project name.
     fn looks_like_slicer_profile(name: &str) -> bool {
-        let lower = name.to_lowercase();
+        /// Case-insensitive substring search without allocating a lowercase copy.
+        fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+            haystack
+                .as_bytes()
+                .windows(needle.len())
+                .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+        }
 
         // Pattern: "0.2mm layer, 2 walls, 15% infill" style
-        if lower.contains("mm layer") || lower.contains("% infill") || lower.contains(" walls") {
+        if contains_ignore_case(name, "mm layer")
+            || contains_ignore_case(name, "% infill")
+            || contains_ignore_case(name, " walls")
+        {
             return true;
         }
 
         // Pattern: contains multiple common profile terms
         let profile_terms = ["pla", "petg", "abs", "tpu", "draft", "quality", "strength"];
-        let term_count = profile_terms.iter().filter(|t| lower.contains(*t)).count();
+        let term_count = profile_terms
+            .iter()
+            .filter(|t| contains_ignore_case(name, t))
+            .count();
         term_count >= 2
     }
 
     /// Returns true if a print job is currently active (running or paused).
     pub fn is_active(&self) -> bool {
-        matches!(self.gcode_state.as_str(), "RUNNING" | "PAUSE")
+        matches!(self.gcode_state, GcodeState::Running | GcodeState::Pause)
     }
 
     /// Returns a failure description if the print has failed.
@@ -293,7 +342,7 @@ impl PrintStatus {
     /// Prioritizes `fail_reason` (human-readable) from the printer, then falls back
     /// to error codes. Returns `None` if not in a failed state or no error info is available.
     pub fn failure_description(&self) -> Option<Cow<'_, str>> {
-        if self.gcode_state != "FAILED" {
+        if self.gcode_state != GcodeState::Failed {
             return None;
         }
 
@@ -311,7 +360,7 @@ impl PrintStatus {
             return None;
         };
 
-        Some(Cow::Owned(format!("Error code: 0x{:08X}", error_code)))
+        Some(Cow::Owned(format!("Error code: 0x{error_code:08X}")))
     }
 
     /// Determines the current print phase based on stage code and temperatures.
@@ -408,8 +457,7 @@ pub struct Speeds {
 #[derive(Debug, Clone, Default)]
 pub struct AmsState {
     /// AMS units (typically 1-4 units)
-    /// Uses SmallVec since most setups have 1-4 AMS units
-    pub units: SmallVec<[AmsUnit; 4]>,
+    pub units: Vec<AmsUnit>,
     /// The currently active tray slot (0-3 within a unit)
     pub current_tray: Option<u8>,
     /// The currently active AMS unit index (0-3)
@@ -421,8 +469,7 @@ pub struct AmsUnit {
     pub id: u8,
     pub humidity: u8,
     /// Tray slots in this AMS unit (typically 4, or 2 for AMS Lite)
-    /// Uses SmallVec since AMS has exactly 4 slots (or 2 for Lite)
-    pub trays: SmallVec<[AmsTray; 4]>,
+    pub trays: Vec<AmsTray>,
     /// True if this is an AMS Lite unit (2 trays instead of 4)
     pub is_lite: bool,
 }
@@ -442,7 +489,7 @@ pub struct AmsTray {
     pub nozzle_temp_max: Option<i32>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct LightState {
     pub chamber_light: bool,
     pub work_light: bool,
@@ -460,13 +507,13 @@ pub struct HmsError {
     pub code: u32,
     pub module: u8,
     pub severity: u8,
-    pub message: String,
+    pub message: Cow<'static, str>,
     /// When this error was first received from the printer
     pub received_at: Instant,
 }
 
 /// Xcam (AI monitoring) state from the printer.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct XcamState {
     /// Whether spaghetti detection is enabled
     pub spaghetti_detector: bool,
@@ -489,25 +536,25 @@ pub struct IpcamState {
 
 /// Raw MQTT message structure from Bambu printer
 #[derive(Debug, Deserialize)]
-pub struct MqttMessage {
-    pub print: Option<PrintReport>,
-    pub info: Option<InfoReport>,
+pub(crate) struct MqttMessage {
+    pub(crate) print: Option<PrintReport>,
+    pub(crate) info: Option<InfoReport>,
 }
 
 /// Info report from MQTT containing version and module information.
 ///
 /// Sent in response to a `get_version` info request.
 #[derive(Debug, Deserialize)]
-pub struct InfoReport {
-    pub module: Option<Vec<InfoModule>>,
+pub(crate) struct InfoReport {
+    pub(crate) module: Option<Vec<InfoModule>>,
 }
 
 /// A single module entry from the info report.
 #[derive(Debug, Deserialize)]
-pub struct InfoModule {
-    pub name: Option<String>,
-    pub sw_ver: Option<String>,
-    pub hw_ver: Option<String>,
+pub(crate) struct InfoModule {
+    pub(crate) name: Option<String>,
+    pub(crate) sw_ver: Option<String>,
+    pub(crate) hw_ver: Option<String>,
 }
 
 /// Raw print report from MQTT containing all fields sent by the printer.
@@ -518,126 +565,126 @@ pub struct InfoModule {
 /// - Serde deserialization (unknown fields would otherwise cause errors)
 #[allow(dead_code)] // Fields deserialized from MQTT JSON but not all read from Rust
 #[derive(Debug, Default, Deserialize)]
-pub struct PrintReport {
+pub(crate) struct PrintReport {
     // Print job info
-    pub gcode_file: Option<String>,
-    pub subtask_name: Option<String>,
-    pub project_id: Option<String>,
-    pub task_id: Option<String>,
-    pub profile_id: Option<String>,
-    pub subtask_id: Option<String>,
+    pub(crate) gcode_file: Option<String>,
+    pub(crate) subtask_name: Option<String>,
+    pub(crate) project_id: Option<String>,
+    pub(crate) task_id: Option<String>,
+    pub(crate) profile_id: Option<String>,
+    pub(crate) subtask_id: Option<String>,
     #[serde(rename = "mc_percent")]
-    pub progress: Option<u8>,
-    pub layer_num: Option<u32>,
-    pub total_layer_num: Option<u32>,
+    pub(crate) progress: Option<u8>,
+    pub(crate) layer_num: Option<u32>,
+    pub(crate) total_layer_num: Option<u32>,
     #[serde(rename = "mc_remaining_time")]
-    pub remaining_time: Option<u32>,
-    pub gcode_state: Option<String>,
-    pub print_type: Option<String>,
+    pub(crate) remaining_time: Option<u32>,
+    pub(crate) gcode_state: Option<String>,
+    pub(crate) print_type: Option<String>,
     /// Current stage code (stg_cur): indicates what the printer is doing
     /// Common values: 0=idle, 1=auto-leveling, 2=heatbed preheating,
     /// 6=cleaning nozzle, 7=calibrating extrusion, 14=printing, etc.
-    pub stg_cur: Option<i32>,
+    pub(crate) stg_cur: Option<i32>,
     /// Human-readable failure reason from the printer
-    pub fail_reason: Option<String>,
+    pub(crate) fail_reason: Option<String>,
     /// Numeric print error code
-    pub print_error: Option<serde_json::Value>,
+    pub(crate) print_error: Option<serde_json::Value>,
     /// Numeric error code from the motion controller
-    pub mc_print_error_code: Option<serde_json::Value>,
+    pub(crate) mc_print_error_code: Option<serde_json::Value>,
 
     // Temperatures
-    pub nozzle_temper: Option<f32>,
-    pub nozzle_target_temper: Option<f32>,
-    pub bed_temper: Option<f32>,
-    pub bed_target_temper: Option<f32>,
-    pub chamber_temper: Option<f32>,
+    pub(crate) nozzle_temper: Option<f32>,
+    pub(crate) nozzle_target_temper: Option<f32>,
+    pub(crate) bed_temper: Option<f32>,
+    pub(crate) bed_target_temper: Option<f32>,
+    pub(crate) chamber_temper: Option<f32>,
 
     // Speeds & fans
-    pub spd_lvl: Option<u8>,
-    pub spd_mag: Option<u8>,
-    pub cooling_fan_speed: Option<String>,
-    pub big_fan1_speed: Option<String>,
-    pub big_fan2_speed: Option<String>,
+    pub(crate) spd_lvl: Option<u8>,
+    pub(crate) spd_mag: Option<u8>,
+    pub(crate) cooling_fan_speed: Option<String>,
+    pub(crate) big_fan1_speed: Option<String>,
+    pub(crate) big_fan2_speed: Option<String>,
 
     // Lights
-    pub lights_report: Option<Vec<LightReport>>,
+    pub(crate) lights_report: Option<Vec<LightReport>>,
 
     // AMS
-    pub ams: Option<AmsReport>,
-    pub ams_status: Option<u32>,
+    pub(crate) ams: Option<AmsReport>,
+    pub(crate) ams_status: Option<u32>,
 
     // Misc
-    pub wifi_signal: Option<String>,
+    pub(crate) wifi_signal: Option<String>,
 
     // Printer info
-    pub machine_name: Option<String>,
-    pub hw_ver: Option<String>,
-    pub sw_ver: Option<String>,
-    pub nozzle_diameter: Option<String>,
-    pub heatbreak_fan_speed: Option<serde_json::Value>,
-    pub gcode_start_time: Option<serde_json::Value>,
-    pub xcam: Option<XcamReport>,
-    pub ipcam: Option<IpcamReport>,
+    pub(crate) machine_name: Option<String>,
+    pub(crate) hw_ver: Option<String>,
+    pub(crate) sw_ver: Option<String>,
+    pub(crate) nozzle_diameter: Option<String>,
+    pub(crate) heatbreak_fan_speed: Option<serde_json::Value>,
+    pub(crate) gcode_start_time: Option<serde_json::Value>,
+    pub(crate) xcam: Option<XcamReport>,
+    pub(crate) ipcam: Option<IpcamReport>,
 
     // HMS errors
-    pub hms: Option<Vec<HmsReport>>,
+    pub(crate) hms: Option<Vec<HmsReport>>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LightReport {
-    pub node: String,
-    pub mode: String,
+pub(crate) struct LightReport {
+    pub(crate) node: String,
+    pub(crate) mode: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AmsReport {
-    pub ams: Option<Vec<AmsUnitReport>>,
-    pub tray_now: Option<String>,
+pub(crate) struct AmsReport {
+    pub(crate) ams: Option<Vec<AmsUnitReport>>,
+    pub(crate) tray_now: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AmsUnitReport {
-    pub id: String,
-    pub humidity: String,
-    pub tray: Option<Vec<AmsTrayReport>>,
+pub(crate) struct AmsUnitReport {
+    pub(crate) id: String,
+    pub(crate) humidity: String,
+    pub(crate) tray: Option<Vec<AmsTrayReport>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct AmsTrayReport {
-    pub id: String,
-    pub tray_type: Option<String>,
-    pub tray_color: Option<String>,
-    pub remain: Option<i32>,
-    pub tray_sub_brands: Option<String>,
-    pub nozzle_temp_min: Option<String>,
-    pub nozzle_temp_max: Option<String>,
+pub(crate) struct AmsTrayReport {
+    pub(crate) id: String,
+    pub(crate) tray_type: Option<String>,
+    pub(crate) tray_color: Option<String>,
+    pub(crate) remain: Option<i32>,
+    pub(crate) tray_sub_brands: Option<String>,
+    pub(crate) nozzle_temp_min: Option<String>,
+    pub(crate) nozzle_temp_max: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct HmsReport {
-    pub attr: u32,
-    pub code: u32,
+pub(crate) struct HmsReport {
+    pub(crate) attr: u32,
+    pub(crate) code: u32,
 }
 
 /// Xcam report from MQTT. Bambu printers send xcam fields inconsistently
 /// (booleans as strings, ints, or actual bools), so we accept any JSON value
 /// and parse manually. Unknown fields are ignored.
 #[derive(Debug, Deserialize)]
-pub struct XcamReport {
+pub(crate) struct XcamReport {
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
-    pub first_layer_inspector: Option<bool>,
+    pub(crate) first_layer_inspector: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
-    pub print_halt: Option<bool>,
+    pub(crate) print_halt: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_bool_flexible")]
-    pub spaghetti_detector: Option<bool>,
+    pub(crate) spaghetti_detector: Option<bool>,
 }
 
 /// IP camera report from MQTT. Unknown fields are ignored.
 #[derive(Debug, Deserialize)]
-pub struct IpcamReport {
-    pub ipcam_record: Option<String>,
-    pub timelapse: Option<String>,
-    pub resolution: Option<String>,
+pub(crate) struct IpcamReport {
+    pub(crate) ipcam_record: Option<String>,
+    pub(crate) timelapse: Option<String>,
+    pub(crate) resolution: Option<String>,
 }
 
 /// Deserializes a bool that may arrive as bool, integer, or string from MQTT.
@@ -745,7 +792,7 @@ impl PrinterState {
             self.print_status.remaining_time_mins = v;
         }
         if let Some(v) = &report.gcode_state {
-            self.print_status.gcode_state.clone_from(v);
+            self.print_status.gcode_state = GcodeState::from_mqtt(v);
         }
         if let Some(v) = &report.print_type {
             self.print_status.print_type.clone_from(v);
@@ -844,7 +891,7 @@ impl PrinterState {
                     code: h.code,
                     module: ((h.attr >> HMS_MODULE_SHIFT) & HMS_BYTE_MASK) as u8,
                     severity: ((h.attr >> HMS_SEVERITY_SHIFT) & HMS_BYTE_MASK) as u8,
-                    message: format_hms_code(h.code).into_owned(),
+                    message: format_hms_code(h.code),
                     received_at: now,
                 })
                 .collect();
@@ -1027,7 +1074,7 @@ impl PrinterState {
             ams_state.units = units
                 .iter()
                 .map(|u| {
-                    let trays: SmallVec<[AmsTray; 4]> = u
+                    let trays: Vec<AmsTray> = u
                         .tray
                         .as_ref()
                         .map(|trays| {
@@ -1218,7 +1265,6 @@ fn model_has_chamber(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smallvec::smallvec;
 
     mod speed_level_to_percent_tests {
         use super::*;
@@ -1602,7 +1648,7 @@ mod tests {
             assert_eq!(state.print_status.layer_num, 100);
             assert_eq!(state.print_status.total_layers, 200);
             assert_eq!(state.print_status.remaining_time_mins, 45);
-            assert_eq!(state.print_status.gcode_state, "RUNNING");
+            assert_eq!(state.print_status.gcode_state, GcodeState::Running);
             assert_eq!(state.print_status.print_type, "local");
         }
 
@@ -1950,10 +1996,10 @@ mod tests {
         fn returns_none_when_no_tray_selected() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: smallvec![AmsUnit {
+                    units: vec![AmsUnit {
                         id: 0,
                         humidity: 4,
-                        trays: smallvec![AmsTray {
+                        trays: vec![AmsTray {
                             id: 0,
 
                             material: "PLA".to_string(),
@@ -1977,10 +2023,10 @@ mod tests {
         fn returns_material_when_tray_selected() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: smallvec![AmsUnit {
+                    units: vec![AmsUnit {
                         id: 0,
                         humidity: 4,
-                        trays: smallvec![AmsTray {
+                        trays: vec![AmsTray {
                             id: 0,
                             material: "PETG".to_string(),
                             remaining: 85,
@@ -2003,10 +2049,10 @@ mod tests {
         fn returns_none_when_tray_empty() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: smallvec![AmsUnit {
+                    units: vec![AmsUnit {
                         id: 0,
                         humidity: 4,
-                        trays: smallvec![AmsTray {
+                        trays: vec![AmsTray {
                             id: 0,
                             material: String::new(), // Empty tray
                             remaining: 0,
@@ -2029,11 +2075,11 @@ mod tests {
         fn handles_multi_unit_selection() {
             let state = PrinterState {
                 ams: Some(AmsState {
-                    units: smallvec![
+                    units: vec![
                         AmsUnit {
                             id: 0,
                             humidity: 4,
-                            trays: smallvec![AmsTray {
+                            trays: vec![AmsTray {
                                 id: 0,
 
                                 material: "PLA".to_string(),
@@ -2048,7 +2094,7 @@ mod tests {
                         AmsUnit {
                             id: 1,
                             humidity: 3,
-                            trays: smallvec![AmsTray {
+                            trays: vec![AmsTray {
                                 id: 0,
 
                                 material: "ABS".to_string(),
@@ -2076,7 +2122,7 @@ mod tests {
         #[test]
         fn running_state_is_active() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 ..Default::default()
             };
             assert!(status.is_active());
@@ -2085,7 +2131,7 @@ mod tests {
         #[test]
         fn pause_state_is_active() {
             let status = PrintStatus {
-                gcode_state: "PAUSE".to_string(),
+                gcode_state: GcodeState::Pause,
                 ..Default::default()
             };
             assert!(status.is_active());
@@ -2094,7 +2140,7 @@ mod tests {
         #[test]
         fn idle_state_is_not_active() {
             let status = PrintStatus {
-                gcode_state: "IDLE".to_string(),
+                gcode_state: GcodeState::Idle,
                 ..Default::default()
             };
             assert!(!status.is_active());
@@ -2103,7 +2149,7 @@ mod tests {
         #[test]
         fn finish_state_is_not_active() {
             let status = PrintStatus {
-                gcode_state: "FINISH".to_string(),
+                gcode_state: GcodeState::Finish,
                 ..Default::default()
             };
             assert!(!status.is_active());
@@ -2122,7 +2168,7 @@ mod tests {
         #[test]
         fn returns_none_when_not_failed() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 fail_reason: "Some reason".to_string(),
                 ..Default::default()
             };
@@ -2132,7 +2178,7 @@ mod tests {
         #[test]
         fn returns_none_when_failed_with_no_info() {
             let status = PrintStatus {
-                gcode_state: "FAILED".to_string(),
+                gcode_state: GcodeState::Failed,
                 ..Default::default()
             };
             assert!(status.failure_description().is_none());
@@ -2141,7 +2187,7 @@ mod tests {
         #[test]
         fn returns_fail_reason_when_available() {
             let status = PrintStatus {
-                gcode_state: "FAILED".to_string(),
+                gcode_state: GcodeState::Failed,
                 fail_reason: "Nozzle temperature malfunction".to_string(),
                 print_error: 0x0500_0100,
                 ..Default::default()
@@ -2153,7 +2199,7 @@ mod tests {
         #[test]
         fn falls_back_to_mc_print_error_code() {
             let status = PrintStatus {
-                gcode_state: "FAILED".to_string(),
+                gcode_state: GcodeState::Failed,
                 mc_print_error_code: 0x0500_0400,
                 ..Default::default()
             };
@@ -2164,7 +2210,7 @@ mod tests {
         #[test]
         fn falls_back_to_print_error() {
             let status = PrintStatus {
-                gcode_state: "FAILED".to_string(),
+                gcode_state: GcodeState::Failed,
                 print_error: 0x0300_0100,
                 ..Default::default()
             };
@@ -2175,7 +2221,7 @@ mod tests {
         #[test]
         fn prefers_mc_print_error_code_over_print_error() {
             let status = PrintStatus {
-                gcode_state: "FAILED".to_string(),
+                gcode_state: GcodeState::Failed,
                 print_error: 0x0300_0100,
                 mc_print_error_code: 0x0500_0400,
                 ..Default::default()
@@ -2211,7 +2257,7 @@ mod tests {
             let state =
                 parse_and_apply(r#"{"print": {"mc_percent": 42, "gcode_state": "RUNNING"}}"#);
             assert_eq!(state.print_status.progress, 42);
-            assert_eq!(state.print_status.gcode_state, "RUNNING");
+            assert_eq!(state.print_status.gcode_state, GcodeState::Running);
         }
 
         #[test]
@@ -2423,7 +2469,7 @@ mod tests {
                     "mc_print_error_code": "50331904"
                 }}"#,
             );
-            assert_eq!(state.print_status.gcode_state, "FAILED");
+            assert_eq!(state.print_status.gcode_state, GcodeState::Failed);
             assert_eq!(
                 state.print_status.fail_reason,
                 "Nozzle temperature malfunction"
@@ -2674,7 +2720,7 @@ mod tests {
 
         fn make_running_status(stage_code: i32) -> PrintStatus {
             PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 stage_code,
                 ..Default::default()
             }
@@ -2683,7 +2729,7 @@ mod tests {
         #[test]
         fn returns_none_when_not_active() {
             let status = PrintStatus {
-                gcode_state: "IDLE".to_string(),
+                gcode_state: GcodeState::Idle,
                 ..Default::default()
             };
             let temps = Temperatures::default();
@@ -2728,7 +2774,7 @@ mod tests {
         #[test]
         fn infers_bed_heating_from_temperature() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 stage_code: 0,
                 ..Default::default()
             };
@@ -2743,7 +2789,7 @@ mod tests {
         #[test]
         fn infers_nozzle_heating_from_temperature() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 stage_code: 0,
                 ..Default::default()
             };
@@ -2760,7 +2806,7 @@ mod tests {
         #[test]
         fn detects_printing_with_progress() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 stage_code: 0,
                 progress: 50,
                 ..Default::default()
@@ -2778,7 +2824,7 @@ mod tests {
         #[test]
         fn detects_printing_with_layers() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 stage_code: 0,
                 layer_num: 5,
                 ..Default::default()
@@ -2796,7 +2842,7 @@ mod tests {
         #[test]
         fn returns_preparing_as_fallback() {
             let status = PrintStatus {
-                gcode_state: "RUNNING".to_string(),
+                gcode_state: GcodeState::Running,
                 stage_code: 0,
                 progress: 0,
                 layer_num: 0,
@@ -2815,7 +2861,7 @@ mod tests {
         #[test]
         fn handles_pause_state() {
             let status = PrintStatus {
-                gcode_state: "PAUSE".to_string(),
+                gcode_state: GcodeState::Pause,
                 stage_code: 16,
                 ..Default::default()
             };

@@ -11,12 +11,13 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+use std::collections::VecDeque;
 
 /// Renders all active toasts in the given area.
 ///
 /// Toasts are rendered from bottom to top (newest at bottom).
 /// Each toast is a single line with an icon and message.
-pub fn render(frame: &mut Frame, toasts: &[Toast], area: Rect) {
+pub fn render(frame: &mut Frame, toasts: &VecDeque<Toast>, area: Rect) {
     if toasts.is_empty() || area.height == 0 {
         return;
     }
@@ -33,7 +34,7 @@ pub fn render(frame: &mut Frame, toasts: &[Toast], area: Rect) {
             };
 
             Line::from(vec![
-                Span::styled(format!(" {} ", icon), Style::new().fg(color)),
+                Span::styled(format!(" {icon} "), Style::new().fg(color)),
                 Span::styled(&toast.message, Style::new().fg(color)),
             ])
         })

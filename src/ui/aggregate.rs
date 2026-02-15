@@ -239,7 +239,7 @@ fn render_progress_bar(frame: &mut Frame, state: &PrinterState, area: Rect) {
     let gauge = Gauge::default()
         .gauge_style(Style::new().fg(progress_color).bg(Color::DarkGray))
         .ratio(f64::from(progress.min(100)) / 100.0)
-        .label(format!("{}%", progress));
+        .label(format!("{progress}%"));
 
     // Add small margin to progress bar
     let progress_area = Rect::new(
@@ -276,7 +276,7 @@ fn render_info_row(
     let update_text: Cow<'static, str> = match last_update {
         Some(t) => {
             let secs = t.elapsed().as_secs();
-            Cow::Owned(format!("{}s", secs))
+            Cow::Owned(format!("{secs}s"))
         }
         None => Cow::Borrowed("--"),
     };
@@ -322,5 +322,5 @@ fn get_status_text(state: &PrinterState, is_connected: bool) -> &'static str {
         return "Disconnected";
     }
 
-    gcode_state_to_status(&state.print_status.gcode_state)
+    gcode_state_to_status(state.print_status.gcode_state)
 }

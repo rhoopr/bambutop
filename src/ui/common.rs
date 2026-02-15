@@ -3,6 +3,7 @@
 //! This module contains common functions and constants used across
 //! multiple UI components to avoid code duplication.
 
+use crate::printer::GcodeState;
 use std::borrow::Cow;
 
 /// WiFi signal threshold for strong signal (dBm)
@@ -49,7 +50,7 @@ pub fn format_compact_title<'a>(printer_model: &'a str, serial_suffix: &str) -> 
         }
     } else {
         // Format with serial suffix
-        Cow::Owned(format!("{} ...{}", short_model, serial_suffix))
+        Cow::Owned(format!("{short_model} ...{serial_suffix}"))
     }
 }
 
@@ -96,16 +97,15 @@ pub fn parse_dbm(s: &str) -> Option<i32> {
 ///
 /// Maps printer gcode states to user-friendly display text.
 /// This is the canonical implementation used by both the App and UI components.
-pub fn gcode_state_to_status(gcode_state: &str) -> &'static str {
+pub fn gcode_state_to_status(gcode_state: GcodeState) -> &'static str {
     match gcode_state {
-        "IDLE" => "Idle",
-        "PREPARE" => "Preparing",
-        "RUNNING" => "Printing",
-        "PAUSE" => "Paused",
-        "FINISH" => "Finished",
-        "FAILED" => "Failed",
-        "" => "Connecting...",
-        _ => "Unknown",
+        GcodeState::Idle => "Idle",
+        GcodeState::Prepare => "Preparing",
+        GcodeState::Running => "Printing",
+        GcodeState::Pause => "Paused",
+        GcodeState::Finish => "Finished",
+        GcodeState::Failed => "Failed",
+        GcodeState::Unknown => "Connecting...",
     }
 }
 
@@ -265,22 +265,17 @@ mod tests {
 
         #[test]
         fn maps_known_states() {
-            assert_eq!(gcode_state_to_status("IDLE"), "Idle");
-            assert_eq!(gcode_state_to_status("PREPARE"), "Preparing");
-            assert_eq!(gcode_state_to_status("RUNNING"), "Printing");
-            assert_eq!(gcode_state_to_status("PAUSE"), "Paused");
-            assert_eq!(gcode_state_to_status("FINISH"), "Finished");
-            assert_eq!(gcode_state_to_status("FAILED"), "Failed");
+            assert_eq!(gcode_state_to_status(GcodeState::Idle), "Idle");
+            assert_eq!(gcode_state_to_status(GcodeState::Prepare), "Preparing");
+            assert_eq!(gcode_state_to_status(GcodeState::Running), "Printing");
+            assert_eq!(gcode_state_to_status(GcodeState::Pause), "Paused");
+            assert_eq!(gcode_state_to_status(GcodeState::Finish), "Finished");
+            assert_eq!(gcode_state_to_status(GcodeState::Failed), "Failed");
         }
 
         #[test]
-        fn maps_empty_to_connecting() {
-            assert_eq!(gcode_state_to_status(""), "Connecting...");
-        }
-
-        #[test]
-        fn maps_unknown_to_unknown() {
-            assert_eq!(gcode_state_to_status("FOOBAR"), "Unknown");
+        fn maps_unknown_to_connecting() {
+            assert_eq!(gcode_state_to_status(GcodeState::Unknown), "Connecting...");
         }
     }
 }

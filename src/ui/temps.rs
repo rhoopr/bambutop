@@ -33,7 +33,7 @@ fn celsius_to_fahrenheit(celsius: f32) -> f32 {
 /// Formats a temperature value with the appropriate unit symbol.
 fn format_temp(celsius: f32, use_celsius: bool) -> String {
     if use_celsius {
-        format!("{:.0}°C", celsius)
+        format!("{celsius:.0}°C")
     } else {
         format!("{:.0}°F", celsius_to_fahrenheit(celsius))
     }
@@ -42,7 +42,7 @@ fn format_temp(celsius: f32, use_celsius: bool) -> String {
 /// Formats a temperature with target (e.g., "200°C / 210°C").
 fn format_temp_with_target(current: f32, target: f32, use_celsius: bool) -> String {
     if use_celsius {
-        format!("{:.0}°C / {:.0}°C", current, target)
+        format!("{current:.0}°C / {target:.0}°C")
     } else {
         format!(
             "{:.0}°F / {:.0}°F",
@@ -294,10 +294,7 @@ fn render_chamber_display(
                 Style::new().fg(color),
             ),
             Span::styled(
-                format!(
-                    " ({}: {:.0}-{:.0}{})",
-                    material, range_low, range_high, unit
-                ),
+                format!(" ({material}: {range_low:.0}-{range_high:.0}{unit})"),
                 Style::new().fg(Color::DarkGray),
             ),
         ];
@@ -346,6 +343,7 @@ fn render_chamber_display(
 }
 
 /// Configuration for rendering a temperature gauge.
+#[derive(Clone, Copy)]
 struct TempGaugeConfig {
     label: &'static str,
     current: f32,

@@ -110,6 +110,11 @@ pub struct App {
     pub show_help: bool,
     /// Current view mode (aggregate or single printer)
     pub view_mode: ViewMode,
+    /// Cached printer state snapshots (one per printer).
+    /// Refreshed lazily via `refresh_snapshots()` before each render frame.
+    cached_snapshots: Vec<PrinterState>,
+    /// Dirty flags for each printer snapshot (set on StateUpdated, cleared by refresh).
+    snapshot_dirty: Vec<bool>,
 }
 
 impl App {
@@ -120,6 +125,7 @@ impl App {
     #[cfg(test)]
     pub fn new(printer_state: SharedPrinterState) -> Self {
         // Initialize with single printer for backward compatibility
+        let initial_snapshot = printer_state.lock().expect("state lock poisoned").clone();
         let printers = vec![Arc::clone(&printer_state)];
         let printer_connections = vec![false];
         let printer_last_updates = vec![None];
@@ -144,7 +150,9 @@ impl App {
             toasts: VecDeque::new(),
             timezone_offset_secs: Self::compute_timezone_offset(),
             show_help: false,
-            view_mode: ViewMode::Single, // Single printer = single view
+            view_mode: ViewMode::Single,
+            cached_snapshots: vec![initial_snapshot],
+            snapshot_dirty: vec![true],
         }
     }
 
@@ -160,6 +168,12 @@ impl App {
         let printer_connections = vec![false; printer_count];
         let printer_last_updates = vec![None; printer_count];
         let printer_error_messages = vec![None; printer_count];
+
+        // Take initial snapshots of all printers
+        let cached_snapshots: Vec<PrinterState> = printers
+            .iter()
+            .map(|p| p.lock().expect("state lock poisoned").clone())
+            .collect();
 
         // Use aggregate view when multiple printers, single view otherwise
         let view_mode = if printer_count > 1 {
@@ -188,6 +202,8 @@ impl App {
             timezone_offset_secs: Self::compute_timezone_offset(),
             show_help: false,
             view_mode,
+            cached_snapshots,
+            snapshot_dirty: vec![true; printer_count],
         }
     }
 
@@ -216,11 +232,11 @@ impl App {
     /// Returns snapshots of all printer states for rendering.
     ///
     /// This clones each state to avoid holding locks during rendering.
-    pub fn all_printer_snapshots(&self) -> Vec<crate::printer::PrinterState> {
-        self.printers
-            .iter()
-            .map(|p| p.lock().expect("state lock poisoned").clone())
-            .collect()
+    /// Returns cached snapshots of all printer states.
+    ///
+    /// Call `refresh_snapshots()` before each render frame to ensure freshness.
+    pub fn all_printer_snapshots(&self) -> &[PrinterState] {
+        &self.cached_snapshots
     }
 
     /// Sets the active printer to the given index.
@@ -379,6 +395,10 @@ impl App {
                 // State is updated via shared reference, just record the time
                 self.set_printer_last_update(printer_index, Some(Instant::now()));
                 self.set_printer_connected(printer_index, true);
+                // Mark snapshot as dirty so it gets refreshed before next render
+                if let Some(flag) = self.snapshot_dirty.get_mut(printer_index) {
+                    *flag = true;
+                }
             }
             MqttEvent::Error {
                 printer_index,
@@ -394,11 +414,11 @@ impl App {
     /// Also updates the legacy `error_message` field if this is the active printer.
     fn set_printer_error(&mut self, index: usize, error: Option<String>) {
         if let Some(err_slot) = self.printer_error_messages.get_mut(index) {
-            *err_slot = error.clone();
-            // Update legacy field if this is the active printer
             if index == self.active_printer_index {
-                self.error_message = error;
+                // Clone to legacy field first, then move into slot (avoids cloning error)
+                self.error_message = error.clone();
             }
+            *err_slot = error;
         }
     }
 
@@ -432,17 +452,29 @@ impl App {
         }
 
         let state = self.printer_state.lock().expect("state lock poisoned");
-        crate::ui::common::gcode_state_to_status(&state.print_status.gcode_state)
+        crate::ui::common::gcode_state_to_status(state.print_status.gcode_state)
     }
 
-    /// Returns a snapshot of the printer state for rendering.
+    /// Returns a cached snapshot of the active printer state for rendering.
     ///
-    /// This clones the state to avoid holding the lock during rendering.
-    pub fn printer_state_snapshot(&self) -> PrinterState {
-        self.printer_state
-            .lock()
-            .expect("state lock poisoned")
-            .clone()
+    /// Call `refresh_snapshots()` before each render frame to ensure freshness.
+    pub fn printer_state_snapshot(&self) -> &PrinterState {
+        &self.cached_snapshots[self.active_printer_index]
+    }
+
+    /// Refreshes cached printer state snapshots for any printers marked dirty.
+    ///
+    /// Call this once per render frame, before drawing. Only re-clones states
+    /// that have changed since the last refresh, reducing lock contention.
+    pub fn refresh_snapshots(&mut self) {
+        for (i, dirty) in self.snapshot_dirty.iter_mut().enumerate() {
+            if *dirty {
+                if let Some(printer) = self.printers.get(i) {
+                    self.cached_snapshots[i] = printer.lock().expect("state lock poisoned").clone();
+                }
+                *dirty = false;
+            }
+        }
     }
 
     /// Adds a toast notification with the given message and severity.

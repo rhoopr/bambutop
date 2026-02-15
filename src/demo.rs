@@ -5,10 +5,10 @@
 
 use crate::mqtt::SharedPrinterState;
 use crate::printer::{
-    AmsState, AmsTray, AmsUnit, HmsError, IpcamState, LightState, PrintStatus, PrinterState,
-    ReceivedFields, Speeds, Temperatures, XcamState,
+    AmsState, AmsTray, AmsUnit, GcodeState, HmsError, IpcamState, LightState, PrintStatus,
+    PrinterState, ReceivedFields, Speeds, Temperatures, XcamState,
 };
-use smallvec::smallvec;
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -51,7 +51,7 @@ fn office_x1c() -> PrinterState {
             layer_num: 180,
             total_layers: 240,
             remaining_time_mins: 45,
-            gcode_state: "RUNNING".to_string(),
+            gcode_state: GcodeState::Running,
             stage_code: 0,
             ..Default::default()
         },
@@ -70,10 +70,10 @@ fn office_x1c() -> PrinterState {
             chamber_fan_speed: 50,
         },
         ams: Some(AmsState {
-            units: smallvec![AmsUnit {
+            units: vec![AmsUnit {
                 id: 0,
                 humidity: 3,
-                trays: smallvec![
+                trays: vec![
                     AmsTray {
                         id: 0,
                         material: "PLA".to_string(),
@@ -121,7 +121,7 @@ fn office_x1c() -> PrinterState {
             work_light: false,
         },
         wifi_signal: "-42dBm".to_string(),
-        hms_errors: smallvec![],
+        hms_errors: vec![],
         hms_received: true,
         firmware_version: "01.08.02.00".to_string(),
         hardware_version: "".to_string(),
@@ -160,7 +160,7 @@ fn workshop_p1s() -> PrinterState {
             layer_num: 85,
             total_layers: 200,
             remaining_time_mins: 87,
-            gcode_state: "PAUSE".to_string(),
+            gcode_state: GcodeState::Pause,
             stage_code: 16, // USER_PAUSED
             ..Default::default()
         },
@@ -179,10 +179,10 @@ fn workshop_p1s() -> PrinterState {
             chamber_fan_speed: 0,
         },
         ams: Some(AmsState {
-            units: smallvec![AmsUnit {
+            units: vec![AmsUnit {
                 id: 0,
                 humidity: 5,
-                trays: smallvec![
+                trays: vec![
                     AmsTray {
                         id: 0,
                         material: "PLA".to_string(),
@@ -230,11 +230,11 @@ fn workshop_p1s() -> PrinterState {
             work_light: false,
         },
         wifi_signal: "-58dBm".to_string(),
-        hms_errors: smallvec![HmsError {
+        hms_errors: vec![HmsError {
             code: 0x0500_0200,
             module: 5,
             severity: 2,
-            message: "Filament may be tangled".to_string(),
+            message: Cow::Borrowed("Filament may be tangled"),
             received_at: Instant::now(),
         }],
         hms_received: true,

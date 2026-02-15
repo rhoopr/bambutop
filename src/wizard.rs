@@ -79,7 +79,7 @@ pub fn run_setup_wizard() -> Result<Config> {
     println!("Configuration saved to: {}", config_path.display());
     let printer_count = 1 + config.extra_printers.len();
     if printer_count > 1 {
-        println!("  {} printers configured.", printer_count);
+        println!("  {printer_count} printers configured.");
     }
     println!();
 
@@ -110,7 +110,7 @@ fn prompt_serial(label: &str) -> Result<String> {
 
         // Bambu serial numbers are typically 15 alphanumeric characters
         if input.len() < 3 {
-            println!("  Serial number seems too short. Bambu serial numbers are typically {} characters.", EXPECTED_SERIAL_LENGTH);
+            println!("  Serial number seems too short. Bambu serial numbers are typically {EXPECTED_SERIAL_LENGTH} characters.");
             println!("  Example: 01P00A000000000");
             continue;
         }
@@ -142,8 +142,7 @@ fn prompt_access_code(label: &str) -> Result<String> {
         // Bambu access codes are typically 8 alphanumeric characters
         if input.len() < MIN_ACCESS_CODE_LENGTH {
             println!(
-                "  Access code seems too short (minimum {} characters).",
-                MIN_ACCESS_CODE_LENGTH
+                "  Access code seems too short (minimum {MIN_ACCESS_CODE_LENGTH} characters)."
             );
             println!("  Access codes are found in printer settings under LAN mode.");
             continue;
@@ -162,7 +161,7 @@ fn prompt_access_code(label: &str) -> Result<String> {
 /// Prompts for user input with the given label.
 fn prompt(label: &str) -> Result<String> {
     loop {
-        print!("{}: ", label);
+        print!("{label}: ");
         io::stdout()
             .flush()
             .context("Failed to flush stdout during prompt")?;
@@ -184,7 +183,7 @@ fn prompt(label: &str) -> Result<String> {
 
 /// Prompts for optional user input. Returns None if the user presses Enter without input.
 fn prompt_optional(label: &str) -> Result<Option<String>> {
-    print!("{}: ", label);
+    print!("{label}: ");
     io::stdout()
         .flush()
         .context("Failed to flush stdout during prompt")?;
@@ -205,7 +204,7 @@ fn prompt_optional(label: &str) -> Result<Option<String>> {
 /// Prompts for a yes/no response. Returns true for 'y'/'yes', false for 'n'/'no'.
 fn prompt_yes_no(label: &str) -> Result<bool> {
     loop {
-        print!("{} (y/n): ", label);
+        print!("{label} (y/n): ");
         io::stdout()
             .flush()
             .context("Failed to flush stdout during prompt")?;

@@ -114,7 +114,7 @@ pub fn render(
     let remaining_display: Cow<'_, str> = if print_status.remaining_time_mins == 0 {
         time_remaining
     } else {
-        Cow::Owned(format!("{} (ETA {})", time_remaining, eta_clock))
+        Cow::Owned(format!("{time_remaining} (ETA {eta_clock})"))
     };
 
     let layer_value: Cow<'static, str> = if print_status.total_layers > 0 {
@@ -228,9 +228,9 @@ fn format_time(mins: u32) -> Cow<'static, str> {
         let hours = mins / 60;
         let minutes = mins % 60;
         Cow::Owned(if hours > 0 {
-            format!("{}h {}m", hours, minutes)
+            format!("{hours}h {minutes}m")
         } else {
-            format!("{}m", minutes)
+            format!("{minutes}m")
         })
     }
 }
@@ -282,7 +282,7 @@ fn format_eta_clock(remaining_mins: u32, timezone_offset_secs: i32) -> Cow<'stat
         _ => (hour_24 - 12, "PM"),
     };
 
-    Cow::Owned(format!("{}:{:02} {}", hour_12, minute, am_pm))
+    Cow::Owned(format!("{hour_12}:{minute:02} {am_pm}"))
 }
 
 #[cfg(test)]

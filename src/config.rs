@@ -144,7 +144,7 @@ impl Config {
         }
 
         let content = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read config file: {:?}", config_path))?;
+            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
         Self::parse(&content)
             .map(Some)
@@ -191,8 +191,9 @@ impl Config {
         let config_path = Self::config_path().context("failed to determine config file path")?;
 
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
 
         // Serialize using the new multi-printer format
@@ -203,7 +204,7 @@ impl Config {
             toml::to_string_pretty(&save_config).with_context(|| "Failed to serialize config")?;
 
         fs::write(&config_path, content)
-            .with_context(|| format!("Failed to write config file: {:?}", config_path))?;
+            .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
 
         Ok(())
     }

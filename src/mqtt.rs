@@ -82,6 +82,7 @@ impl ServerCertVerifier for NoVerifier {
 ///
 /// All events include a `printer_index` to identify which printer the event relates to.
 /// Note: Adding new variants is a breaking change for exhaustive matches.
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum MqttEvent {
     /// Successfully connected to the MQTT broker for a specific printer
@@ -104,7 +105,7 @@ pub type SharedPrinterState = Arc<Mutex<PrinterState>>;
 pub struct MqttClient {
     client: AsyncClient,
     /// Handle to the background event loop task for graceful shutdown
-    _event_loop_handle: JoinHandle<()>,
+    event_loop_handle: JoinHandle<()>,
     /// Cached report topic for re-subscription (e.g., "device/{serial}/report")
     report_topic: String,
     /// Cached request topic to avoid repeated format! allocations
@@ -131,7 +132,7 @@ impl MqttClient {
     /// Returns the client, shared printer state, and optionally a new receiver if
     /// `event_tx` was None.
     pub async fn connect(
-        config: PrinterConfig,
+        config: &PrinterConfig,
         printer_index: usize,
         event_tx: Option<mpsc::Sender<MqttEvent>>,
     ) -> Result<(Self, SharedPrinterState, Option<mpsc::Receiver<MqttEvent>>)> {
@@ -198,12 +199,10 @@ impl MqttClient {
                         // session as usable. A non-Success code means the broker
                         // rejected us (bad credentials, not authorised, etc.).
                         if connack.code != ConnectReturnCode::Success {
-                            let _ = event_tx
-                                .send(MqttEvent::Error {
-                                    printer_index,
-                                    message: format!("Connection rejected: {:?}", connack.code),
-                                })
-                                .await;
+                            let _ = event_tx.try_send(MqttEvent::Error {
+                                printer_index,
+                                message: format!("Connection rejected: {:?}", connack.code),
+                            });
                             continue;
                         }
                         {
@@ -228,7 +227,7 @@ impl MqttClient {
                                 .publish(&event_request_topic, QoS::AtMostOnce, false, payload)
                                 .await;
                         }
-                        let _ = event_tx.send(MqttEvent::Connected { printer_index }).await;
+                        let _ = event_tx.try_send(MqttEvent::Connected { printer_index });
                     }
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
                         if let Ok(payload) = std::str::from_utf8(&publish.payload) {
@@ -238,9 +237,8 @@ impl MqttClient {
                                         state_clone.lock().expect("state lock poisoned");
                                     state_guard.update_from_message(&msg);
                                 }
-                                let _ = event_tx
-                                    .send(MqttEvent::StateUpdated { printer_index })
-                                    .await;
+                                let _ =
+                                    event_tx.try_send(MqttEvent::StateUpdated { printer_index });
                             }
                             // Many messages may not match our structure — that's ok
                         }
@@ -254,19 +252,15 @@ impl MqttClient {
                             let mut state_guard = state_clone.lock().expect("state lock poisoned");
                             state_guard.connected = false;
                         }
-                        let _ = event_tx
-                            .send(MqttEvent::Disconnected { printer_index })
-                            .await;
-                        let _ = event_tx
-                            .send(MqttEvent::Error {
-                                printer_index,
-                                message: format!(
-                                    "MQTT error: {} (reconnecting in {}s)",
-                                    e,
-                                    RECONNECT_DELAY.as_secs()
-                                ),
-                            })
-                            .await;
+                        let _ = event_tx.try_send(MqttEvent::Disconnected { printer_index });
+                        let _ = event_tx.try_send(MqttEvent::Error {
+                            printer_index,
+                            message: format!(
+                                "MQTT error: {} (reconnecting in {}s)",
+                                e,
+                                RECONNECT_DELAY.as_secs()
+                            ),
+                        });
                         // Wait before reconnecting
                         tokio::time::sleep(RECONNECT_DELAY).await;
                     }
@@ -290,7 +284,7 @@ impl MqttClient {
         Ok((
             Self {
                 client,
-                _event_loop_handle: event_loop_handle,
+                event_loop_handle,
                 report_topic,
                 request_topic,
                 sequence_id: AtomicU64::new(1),
@@ -488,6 +482,6 @@ impl MqttClient {
 impl Drop for MqttClient {
     fn drop(&mut self) {
         // Abort the event loop task on drop for clean shutdown
-        self._event_loop_handle.abort();
+        self.event_loop_handle.abort();
     }
 }

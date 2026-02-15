@@ -60,7 +60,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
 
-    // Take a snapshot of printer state once to avoid holding the lock during rendering
+    // Use cached snapshot of printer state to avoid holding the lock during rendering
     let printer_state = app.printer_state_snapshot();
 
     // Limit width and center horizontally
@@ -76,13 +76,13 @@ pub fn render(frame: &mut Frame, app: &App) {
     let has_chamber = printer_state.has_chamber_temp_sensor();
     let has_active_tray = printer_state.active_filament_type().is_some();
     let temps_height = temps::panel_height(has_chamber, has_active_tray);
-    let ams_height = status::panel_height(&printer_state);
+    let ams_height = status::panel_height(printer_state);
     let temps_height = temps_height.max(ams_height);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height(&printer_state)), // Header (status + system info)
+            Constraint::Length(header_height(printer_state)), // Header (status + system info)
             Constraint::Length(7), // Progress (job, spacer, info, bar, spacer)
             Constraint::Length(temps_height), // Temps + AMS row (dynamic height)
             Constraint::Min(1),    // Spacer (absorbs extra space)
@@ -91,8 +91,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(content_area);
 
-    header::render(frame, app, &printer_state, chunks[0]);
-    progress::render(frame, &printer_state, app.timezone_offset_secs(), chunks[1]);
+    header::render(frame, app, printer_state, chunks[0]);
+    progress::render(frame, printer_state, app.timezone_offset_secs(), chunks[1]);
 
     // Middle row: temps on left (flexible), AMS on right (fixed width)
     // AMS width: 35 inner content + 2 borders = 37
@@ -101,8 +101,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(37)])
         .split(chunks[2]);
 
-    temps::render(frame, &printer_state, app.use_celsius, middle_row[0]);
-    status::render_ams(frame, &printer_state, middle_row[1]);
+    temps::render(frame, printer_state, app.use_celsius, middle_row[0]);
+    status::render_ams(frame, printer_state, middle_row[1]);
 
     // Toast notifications: render at bottom of spacer area, right-aligned
     let toast_count = app.toasts.len();
@@ -116,8 +116,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 spacer.width,
                 toast_height,
             );
-            let toasts: Vec<_> = app.toasts.iter().cloned().collect();
-            toast::render(frame, &toasts, toast_area);
+            toast::render(frame, &app.toasts, toast_area);
         }
     }
 
@@ -129,7 +128,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     controls::render(
         frame,
-        &printer_state,
+        printer_state,
         app.controls_locked,
         app.cancel_pending,
         app.pause_pending,
@@ -184,7 +183,7 @@ fn render_aggregate_help_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let left = Line::from(vec![
         Span::styled(
-            format!(" BAMBUTOP v{} ", VERSION),
+            format!(" BAMBUTOP v{VERSION} "),
             Style::new()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -208,7 +207,7 @@ fn render_aggregate_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let right = Line::from(vec![Span::styled(
-        format!("{}/{} connected ", connected, total),
+        format!("{connected}/{total} connected "),
         Style::new().fg(status_color),
     )]);
 
@@ -239,10 +238,7 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 ""
             };
-            (
-                Cow::Owned(format!("{}Updated {}s ago ", prefix, secs)),
-                color,
-            )
+            (Cow::Owned(format!("{prefix}Updated {secs}s ago ")), color)
         })
         .unwrap_or((Cow::Borrowed("No data yet "), Color::DarkGray));
 
@@ -250,7 +246,7 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     let temp_unit = if app.use_celsius { "°C" } else { "°F" };
     let left = Line::from(vec![
         Span::styled(
-            format!(" BAMBUTOP v{} ", VERSION),
+            format!(" BAMBUTOP v{VERSION} "),
             Style::new()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -260,7 +256,7 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("q", Style::new().fg(Color::Yellow)),
         Span::raw(" Quit  "),
         Span::styled("u", Style::new().fg(Color::Yellow)),
-        Span::raw(format!(" {}", temp_unit)),
+        Span::raw(format!(" {temp_unit}")),
     ]);
 
     // Right side: last update time with staleness indicator

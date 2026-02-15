@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use smallvec::SmallVec;
+use std::borrow::Cow;
 use std::time::Instant;
 
 /// Seconds per minute for time formatting
@@ -66,7 +66,7 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         };
         let serial_suffix = extract_serial_suffix(&printer_state.serial_suffix);
         let compact_title = format_compact_title(model, serial_suffix);
-        format!(" {} ", compact_title)
+        format!(" {compact_title} ")
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -79,7 +79,7 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
     let status_line = Line::from(vec![
         Span::raw(" "),
         Span::styled(
-            format!(" {} ", status),
+            format!(" {status} "),
             Style::new()
                 .fg(Color::Black)
                 .bg(status_color)
@@ -148,7 +148,7 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         .split(inner);
 
     // Left side: status messages (pre-allocate for typical case)
-    let mut lines: SmallVec<[Line; 4]> = SmallVec::new();
+    let mut lines: Vec<Line> = Vec::with_capacity(4);
 
     if let Some(err) = &app.error_message {
         lines.push(Line::from(vec![
@@ -172,10 +172,10 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
                 Span::raw(" "),
                 Span::styled(error_code, Style::new().fg(Color::DarkGray)),
                 Span::raw(" "),
-                Span::styled(error.message.as_str(), Style::new().fg(severity_color)),
+                Span::styled(&*error.message, Style::new().fg(severity_color)),
                 Span::raw(" "),
                 Span::styled(
-                    format!("({})", relative_time),
+                    format!("({relative_time})"),
                     Style::new().fg(Color::DarkGray),
                 ),
             ]));
@@ -194,7 +194,7 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines.into_vec()), cols[0]);
+    frame.render_widget(Paragraph::new(lines), cols[0]);
 
     // Right side: System info (WiFi, firmware, nozzle, camera)
     let mut info_lines: Vec<Line> = Vec::with_capacity(3);
@@ -273,17 +273,17 @@ fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
 ///
 /// Returns human-readable strings like "2m ago", "1h ago", "3d ago".
 /// For times under 60 seconds, returns "just now".
-fn format_relative_time(instant: Instant) -> String {
+fn format_relative_time(instant: Instant) -> Cow<'static, str> {
     let elapsed = instant.elapsed();
     let secs = elapsed.as_secs();
 
     if secs < SECS_PER_MINUTE {
-        "just now".to_string()
+        Cow::Borrowed("just now")
     } else if secs < SECS_PER_HOUR {
-        format!("{}m ago", secs / SECS_PER_MINUTE)
+        Cow::Owned(format!("{}m ago", secs / SECS_PER_MINUTE))
     } else if secs < SECS_PER_DAY {
-        format!("{}h ago", secs / SECS_PER_HOUR)
+        Cow::Owned(format!("{}h ago", secs / SECS_PER_HOUR))
     } else {
-        format!("{}d ago", secs / SECS_PER_DAY)
+        Cow::Owned(format!("{}d ago", secs / SECS_PER_DAY))
     }
 }
