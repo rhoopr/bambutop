@@ -47,6 +47,10 @@ const NAV_SHORTCUTS: &[Shortcut] = &[
         key: "a",
         description: "Aggregate view",
     },
+    Shortcut {
+        key: "r",
+        description: "Refresh all printers",
+    },
 ];
 
 /// Printer control shortcuts (require unlock with x)
