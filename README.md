@@ -4,8 +4,8 @@
 
 A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D printer.
 
-![BambuTop Detail View](screenshot-detail.png?v=2)
-![BambuTop Aggregate View](screenshot-aggregate.png?v=2)
+![BambuTop Detail View](screenshot-detail.png?v=3)
+![BambuTop Aggregate View](screenshot-aggregate.png?v=3)
 
 ## Features
 
@@ -16,7 +16,8 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 - Print failure reason and error codes when a job fails
 
 **Temperatures & Fans**
-- Nozzle, bed, and chamber temperatures with visual gauges (°C or °F)
+- Nozzle, bed, and chamber temperatures with visual gauges
+- Toggle between Celsius and Fahrenheit
 - Safe chamber temperature range based on active filament type (PLA, PETG, ABS, etc.)
 - Part cooling, auxiliary, chamber, and heatbreak fan speeds
 
@@ -46,8 +47,8 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 
 | Series | Models |
 |--------|--------|
-| P Series | P1P, P1S, P2S |
 | X Series | X1C, X1E |
+| P Series | P1P, P1S, P2S |
 | A Series | A1, A1 Mini |
 | H Series | H2C, H2S, H2D, H2D Pro |
 
@@ -86,19 +87,19 @@ cargo install --git https://github.com/rhoopr/bambutop.git
 
 ## Getting Started
 
-Run `bambutop` and follow the setup wizard to connect to your printer:
+Run `bambutop` and follow the setup wizard:
 
 ```bash
 bambutop
 ```
 
-You'll need three pieces of information:
+You'll need three pieces of information per printer:
 
 | Setting | Where to Find It |
 |---------|------------------|
-| **IP Address** | Router's connected devices list, or Bambu Studio → Device → Network |
-| **Serial Number** | Printer label, or Bambu Studio → Device info |
-| **Access Code** | Printer screen → Settings → Network → Access Code |
+| **IP Address** | Router's connected devices list, or Bambu Studio > Device > Network |
+| **Serial Number** | Printer label, or Bambu Studio > Device info |
+| **Access Code** | Printer screen > Settings > Network > Access Code |
 
 ## Multi-Printer Setup
 
@@ -142,7 +143,7 @@ Controls that affect the printer (`l`, `w`, `+/-`, `Space`, `c`) require unlocki
 ## Command-Line Options
 
 ```bash
-# Connect directly (saves to config file)
+# Connect directly (saves to config)
 bambutop --ip 192.168.1.100 --serial YOUR_SERIAL --access-code YOUR_CODE
 
 # Reset config and re-run setup wizard

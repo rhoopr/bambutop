@@ -42,7 +42,7 @@ fn office_x1c() -> PrinterState {
     PrinterState {
         connected: true,
         printer_name: "Office X1C".to_string(),
-        printer_model: "X1 Carbon".to_string(),
+        printer_model: "Bambu Lab X1C".to_string(),
         serial_suffix: "0M09".to_string(),
         print_status: PrintStatus {
             gcode_file: "Benchy.gcode.3mf".to_string(),

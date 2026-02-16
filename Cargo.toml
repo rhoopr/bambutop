@@ -3,7 +3,7 @@ name = "bambutop"
 version = "0.4.2"
 edition = "2021"
 description = "Terminal-based status monitor for Bambu Labs printers"
-license = "MIT"
+license = "GPL-3.0"
 
 [dependencies]
 # TUI (minimal features)
