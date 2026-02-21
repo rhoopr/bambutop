@@ -1,6 +1,6 @@
 # BambuTop
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest) ![GitHub Downloads](https://img.shields.io/github/downloads/rhoopr/bambutop/total) [![Homebrew](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew)](https://github.com/rhoopr/homebrew-bambutop)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest) ![GitHub Downloads](https://img.shields.io/github/downloads/rhoopr/bambutop/total) [![Homebrew](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew)](https://github.com/rhoopr/homebrew-bambutop) [![AUR](https://img.shields.io/aur/version/bambutop)](https://aur.archlinux.org/packages/bambutop)
 
 A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D printer.
 
@@ -57,6 +57,11 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 ### Homebrew (macOS / Linux)
 ```bash
 brew install rhoopr/bambutop/bambutop
+```
+
+### AUR (Arch Linux)
+```bash
+yay -S bambutop
 ```
 
 ### macOS (Apple Silicon)
