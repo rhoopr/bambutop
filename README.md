@@ -175,3 +175,7 @@ This project wouldn't be possible without the work of the Bambu Lab community:
 ## License
 
 GPLv3 — See [LICENSE](LICENSE) for details.
+
+## Blog
+
+- [I Got Suspended from GitHub for 10 Days](https://robhooper.xyz/github-suspension) — what happens when GitHub's automated systems flag your account
