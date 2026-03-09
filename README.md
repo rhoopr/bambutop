@@ -1,4 +1,7 @@
-> **Blog:** [I Got Suspended from GitHub for 10 Days](https://robhooper.xyz/github-suspension) — what happens when GitHub's automated systems flag your account
+> **Blog:** [### Writing
+
+- [GitHub Is a Single Point of Failure (I Got Auto-Suspended 🫠)](https://robhooper.xyz/github-suspension)
+](https://robhooper.xyz/github-suspension)
 
 # BambuTop
 
