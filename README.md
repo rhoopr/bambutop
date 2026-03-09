@@ -1,7 +1,4 @@
-> **Blog:** [### Writing
-
-- [GitHub Is a Single Point of Failure (I Got Auto-Suspended 🫠)](https://robhooper.xyz/github-suspension)
-](https://robhooper.xyz/github-suspension)
+> **Blog:** [GitHub Is a Single Point of Failure (I Got Auto-Suspended 🫠)](https://robhooper.xyz/github-suspension)
 
 # BambuTop
 
