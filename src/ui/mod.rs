@@ -39,10 +39,16 @@ const MIN_HEADER_HEIGHT: u16 = 4;
 /// Border overhead for the header panel (top + bottom)
 const HEADER_BORDER_HEIGHT: u16 = 2;
 
-/// Calculates the header panel height based on the number of HMS errors.
+/// Calculates the header panel height based on content needs.
 fn header_height(printer_state: &PrinterState) -> u16 {
     let error_count = printer_state.hms_errors.len() as u16;
-    (HEADER_BORDER_HEIGHT + error_count).max(MIN_HEADER_HEIGHT)
+    let has_indicators = printer_state.has_xcam() || printer_state.has_ipcam();
+    // Right column: WiFi + optional indicators + FW = 2 or 3 lines
+    let right_lines = if has_indicators { 3 } else { 2 };
+    // Left column: error count or 1 status line
+    let left_lines = error_count.max(1);
+    let content_lines = left_lines.max(right_lines);
+    (HEADER_BORDER_HEIGHT + content_lines).max(MIN_HEADER_HEIGHT)
 }
 
 /// Renders the main application UI.
@@ -83,11 +89,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height(printer_state)), // Header (status + system info)
-            Constraint::Length(7), // Progress (job, spacer, info, bar, spacer)
-            Constraint::Length(temps_height), // Temps + AMS row (dynamic height)
-            Constraint::Min(1),    // Spacer (absorbs extra space)
-            Constraint::Length(4), // Controls row (right-aligned)
-            Constraint::Length(1), // Help bar
+            Constraint::Length(6),                            // Progress (job, phase, info, bar)
+            Constraint::Length(temps_height),                 // Temps + AMS row (dynamic height)
+            Constraint::Min(1),                               // Spacer (absorbs extra space)
+            Constraint::Length(4),                            // Controls row (right-aligned)
+            Constraint::Length(1),                            // Help bar
         ])
         .split(content_area);
 
@@ -102,7 +108,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(chunks[2]);
 
     temps::render(frame, printer_state, app.use_celsius, middle_row[0]);
-    status::render_ams(frame, printer_state, middle_row[1]);
+    status::render_ams(frame, printer_state, app.use_celsius, middle_row[1]);
 
     // Toast notifications: render at bottom of spacer area, right-aligned
     let toast_count = app.toasts.len();
@@ -266,11 +272,72 @@ fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     )]);
 
     // Split area for left and right alignment
-    let chunks = Layout::default()
+    let bar_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(right.width() as u16)])
         .split(area);
 
-    frame.render_widget(Paragraph::new(left), chunks[0]);
-    frame.render_widget(Paragraph::new(right), chunks[1]);
+    frame.render_widget(Paragraph::new(left), bar_chunks[0]);
+    frame.render_widget(Paragraph::new(right), bar_chunks[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::printer::{HmsError, ReceivedFields};
+    use std::borrow::Cow as StdCow;
+    use std::time::Instant;
+
+    fn state_with_errors(count: u32) -> PrinterState {
+        let hms_errors = (0..count)
+            .map(|i| HmsError {
+                code: i,
+                module: 0,
+                severity: 0,
+                message: StdCow::Borrowed("test"),
+                received_at: Instant::now(),
+            })
+            .collect();
+        PrinterState {
+            hms_errors,
+            ..PrinterState::default()
+        }
+    }
+
+    mod header_height_tests {
+        use super::*;
+
+        #[test]
+        fn minimum_height_for_default_state() {
+            let state = PrinterState::default();
+            assert_eq!(header_height(&state), MIN_HEADER_HEIGHT);
+        }
+
+        #[test]
+        fn grows_with_hms_errors() {
+            let state = state_with_errors(5);
+            assert_eq!(header_height(&state), 7);
+        }
+
+        #[test]
+        fn accounts_for_xcam_indicators() {
+            let mut state = PrinterState::default();
+            state.received.set(ReceivedFields::XCAM);
+            assert_eq!(header_height(&state), 5);
+        }
+
+        #[test]
+        fn accounts_for_ipcam_indicators() {
+            let mut state = PrinterState::default();
+            state.received.set(ReceivedFields::IPCAM);
+            assert_eq!(header_height(&state), 5);
+        }
+
+        #[test]
+        fn errors_dominate_when_many() {
+            let mut state = state_with_errors(10);
+            state.received.set(ReceivedFields::XCAM);
+            assert_eq!(header_height(&state), 12);
+        }
+    }
 }

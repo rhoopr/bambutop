@@ -31,19 +31,11 @@ const HMS_SEVERITY_WARNING: u8 = 1;
 /// HMS severity level considered a serious error (light red)
 const HMS_SEVERITY_ERROR: u8 = 2;
 
-/// Renders the header panel with printer status and system info boxes.
+/// Renders the header panel as a single unified box.
+///
+/// Title shows "Printer Name — Status". Content has HMS/errors on the left
+/// and WiFi, monitoring indicators, and firmware on the right.
 pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
-    // Split into two boxes side by side
-    let boxes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(20), Constraint::Min(1)])
-        .split(area);
-
-    render_status_box(frame, app, printer_state, boxes[0]);
-    render_system_box(frame, app, printer_state, boxes[1]);
-}
-
-fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     let status = app.status_text();
     let status_color = match status {
         "Printing" => Color::Green,
@@ -53,31 +45,23 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         _ => Color::White,
     };
 
-    // Format printer title: config name > "P1S ...0428" > "Bambu Printer"
-    let title = if !printer_state.printer_name.is_empty() {
-        // Use config name
-        format!(" {} ", printer_state.printer_name)
+    let border_color = status_color;
+
+    // Build title: "Printer Name — Status"
+    let printer_name = if !printer_state.printer_name.is_empty() {
+        Cow::Borrowed(printer_state.printer_name.as_str())
     } else {
-        // Use "P1S ...0428" format or fallback
         let model = if printer_state.printer_model.is_empty() {
             "Bambu Printer"
         } else {
             &printer_state.printer_model
         };
         let serial_suffix = extract_serial_suffix(&printer_state.serial_suffix);
-        let compact_title = format_compact_title(model, serial_suffix);
-        format!(" {compact_title} ")
+        format_compact_title(model, serial_suffix)
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(status_color))
-        .title(Span::styled(title, Style::new().fg(status_color)));
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let status_line = Line::from(vec![
-        Span::raw(" "),
+    let title = Line::from(vec![
+        Span::styled(format!(" {printer_name} "), Style::new().fg(border_color)),
         Span::styled(
             format!(" {status} "),
             Style::new()
@@ -87,73 +71,32 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         ),
     ]);
 
-    // Camera/monitoring indicators below status
-    let ai_on = printer_state.has_xcam() && printer_state.xcam.spaghetti_detector;
-    let rec_on = printer_state.has_ipcam() && printer_state.ipcam.recording;
-    let tl_on = printer_state.has_ipcam() && printer_state.ipcam.timelapse;
-    let dot = |on: bool| -> Span {
-        let color = if on { Color::Green } else { Color::DarkGray };
-        Span::styled("●", Style::new().fg(color))
-    };
-    let label = Style::new().fg(Color::DarkGray);
-    let cam_spans: Vec<Span> = vec![
-        Span::raw(" "),
-        Span::styled("AI", label),
-        dot(ai_on),
-        Span::raw(" "),
-        Span::styled("REC", label),
-        dot(rec_on),
-        Span::raw(" "),
-        Span::styled("TL", label),
-        dot(tl_on),
-    ];
-
-    let mut lines = vec![status_line];
-
-    // Show failure reason when print has failed
-    if let Some(failure) = printer_state.print_status.failure_description() {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(failure.into_owned(), Style::new().fg(Color::Red)),
-        ]));
-    } else if cam_spans.len() > 1 {
-        lines.push(Line::from(cam_spans));
-    }
-
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
-    let has_errors = !printer_state.hms_errors.is_empty() || app.error_message.is_some();
-
-    let border_color = if has_errors { Color::Red } else { Color::Green };
-    let title = if has_errors {
-        " HMS Errors "
-    } else {
-        " HMS Status "
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(border_color))
-        .title(Span::styled(title, Style::new().fg(border_color)));
+        .title(title);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split inner area: left for status, right for WiFi
+    // Split inner: left for HMS/status, right for system info
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(28)])
         .split(inner);
 
-    // Left side: status messages (pre-allocate for typical case)
+    // Left side: failure reason, HMS errors, or status
     let mut lines: Vec<Line> = Vec::with_capacity(4);
 
-    if let Some(err) = &app.error_message {
+    if let Some(failure) = printer_state.print_status.failure_description() {
         lines.push(Line::from(vec![
             Span::raw(" "),
-            Span::styled(err.as_str(), Style::new().fg(Color::Red)),
+            Span::styled(failure.into_owned(), Style::new().fg(Color::Red)),
+        ]));
+    } else if let Some(err) = app.active_error_message() {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(err, Style::new().fg(Color::Red)),
         ]));
     } else if !printer_state.hms_errors.is_empty() {
         for error in &printer_state.hms_errors {
@@ -181,13 +124,16 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
             ]));
         }
     } else if !printer_state.hms_received {
-        // No HMS data received yet - show placeholder
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled("--", Style::new().fg(Color::DarkGray)),
         ]));
+    } else if printer_state.print_status.gcode_state == crate::printer::GcodeState::Failed {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Print failed", Style::new().fg(Color::Red)),
+        ]));
     } else {
-        // HMS data received with no errors
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled("All systems normal", Style::new().fg(Color::Green)),
@@ -196,25 +142,58 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 
     frame.render_widget(Paragraph::new(lines), cols[0]);
 
-    // Right side: System info (WiFi, firmware, nozzle, camera)
-    let mut info_lines: Vec<Line> = Vec::with_capacity(3);
+    // Right side: WiFi, monitoring indicators, firmware
+    let mut info_lines: Vec<Line> = Vec::with_capacity(4);
 
     // Line 1: WiFi signal
     let wifi_spans = render_wifi_signal(&printer_state.wifi_signal);
     info_lines.push(Line::from(wifi_spans));
 
-    // Line 2: Firmware + camera/monitoring indicators
-    let mut info_spans: Vec<Span> = Vec::with_capacity(10);
-    if !printer_state.firmware_version.is_empty() {
-        info_spans.push(Span::styled("FW: ", Style::new().fg(Color::DarkGray)));
-        info_spans.push(Span::styled(
-            printer_state.firmware_version.as_str(),
-            Style::new().fg(Color::DarkGray),
-        ));
+    // Line 2: Monitoring indicators (AI, FLI, REC, TL)
+    let has_indicators = printer_state.has_xcam() || printer_state.has_ipcam();
+    if has_indicators {
+        let dot = |on: bool, halt: bool| -> Span<'static> {
+            let color = if !on {
+                Color::DarkGray
+            } else if halt {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            Span::styled("●", Style::new().fg(color))
+        };
+        let label = Style::new().fg(Color::DarkGray);
+        let halt = printer_state.xcam.print_halt;
+        let mut ind_spans: Vec<Span> = Vec::with_capacity(12);
+        if printer_state.has_xcam() {
+            ind_spans.push(Span::styled("AI", label));
+            ind_spans.push(dot(printer_state.xcam.spaghetti_detector, halt));
+            ind_spans.push(Span::raw(" "));
+            ind_spans.push(Span::styled("FLI", label));
+            ind_spans.push(dot(printer_state.xcam.first_layer_inspector, halt));
+            ind_spans.push(Span::raw(" "));
+        }
+        if printer_state.has_ipcam() {
+            ind_spans.push(Span::styled("REC", label));
+            ind_spans.push(dot(printer_state.ipcam.recording, false));
+            ind_spans.push(Span::raw(" "));
+            ind_spans.push(Span::styled("TL", label));
+            ind_spans.push(dot(printer_state.ipcam.timelapse, false));
+            ind_spans.push(Span::raw(" "));
+        }
+        info_lines.push(Line::from(ind_spans));
     }
-    if !info_spans.is_empty() {
-        info_spans.push(Span::raw(" "));
-        info_lines.push(Line::from(info_spans));
+
+    // Line 3: Firmware version
+    if !printer_state.firmware_version.is_empty() {
+        info_lines.push(Line::from(vec![
+            Span::styled("FW: ", Style::new().fg(Color::DarkGray)),
+            Span::styled(
+                printer_state.firmware_version.as_str(),
+                Style::new().fg(Color::DarkGray),
+            ),
+            Span::raw(" "),
+        ]));
     }
 
     frame.render_widget(
@@ -224,14 +203,6 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 }
 
 /// Renders WiFi signal with visual bars and color coding.
-///
-/// Signal strength thresholds:
-/// - Strong: > -50dBm (green)
-/// - Medium: -50 to -70dBm (yellow)
-/// - Weak: < -70dBm (red)
-///
-/// Uses a lifetime parameter to borrow the wifi_signal string directly,
-/// avoiding allocation on every render frame.
 fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
     /// Visual bars for strong WiFi signal
     const BARS_STRONG: &str = "\u{2582}\u{2584}\u{2586}\u{2588}";
@@ -248,10 +219,8 @@ fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
         ];
     }
 
-    // Parse dBm value from string without allocation
     let dbm = parse_dbm(wifi_signal).unwrap_or(WIFI_DEFAULT_DBM);
 
-    // Determine signal strength and color
     let (color, bars) = if dbm > WIFI_STRONG_THRESHOLD {
         (Color::Green, BARS_STRONG)
     } else if dbm > WIFI_MEDIUM_THRESHOLD {
@@ -270,9 +239,6 @@ fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
 }
 
 /// Formats a relative time string from an Instant.
-///
-/// Returns human-readable strings like "2m ago", "1h ago", "3d ago".
-/// For times under 60 seconds, returns "just now".
 fn format_relative_time(instant: Instant) -> Cow<'static, str> {
     let elapsed = instant.elapsed();
     let secs = elapsed.as_secs();
@@ -285,5 +251,141 @@ fn format_relative_time(instant: Instant) -> Cow<'static, str> {
         Cow::Owned(format!("{}h ago", secs / SECS_PER_HOUR))
     } else {
         Cow::Owned(format!("{}d ago", secs / SECS_PER_DAY))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    mod format_relative_time_tests {
+        use super::*;
+
+        #[test]
+        fn just_now_for_recent() {
+            let instant = Instant::now();
+            assert_eq!(format_relative_time(instant), "just now");
+        }
+
+        #[test]
+        fn just_now_at_59_seconds() {
+            let instant = Instant::now() - Duration::from_secs(59);
+            assert_eq!(format_relative_time(instant), "just now");
+        }
+
+        #[test]
+        fn minutes_at_60_seconds() {
+            let instant = Instant::now() - Duration::from_secs(60);
+            assert_eq!(format_relative_time(instant), "1m ago");
+        }
+
+        #[test]
+        fn minutes_at_30_min() {
+            let instant = Instant::now() - Duration::from_secs(30 * 60);
+            assert_eq!(format_relative_time(instant), "30m ago");
+        }
+
+        #[test]
+        fn hours_at_3600_seconds() {
+            let instant = Instant::now() - Duration::from_secs(3600);
+            assert_eq!(format_relative_time(instant), "1h ago");
+        }
+
+        #[test]
+        fn hours_at_5_hours() {
+            let instant = Instant::now() - Duration::from_secs(5 * 3600);
+            assert_eq!(format_relative_time(instant), "5h ago");
+        }
+
+        #[test]
+        fn days_at_86400_seconds() {
+            let instant = Instant::now() - Duration::from_secs(86_400);
+            assert_eq!(format_relative_time(instant), "1d ago");
+        }
+
+        #[test]
+        fn days_at_3_days() {
+            let instant = Instant::now() - Duration::from_secs(3 * 86_400);
+            assert_eq!(format_relative_time(instant), "3d ago");
+        }
+    }
+
+    mod render_wifi_signal_tests {
+        use super::*;
+        use ratatui::style::Color;
+
+        #[test]
+        fn empty_signal_shows_dashes() {
+            let spans = render_wifi_signal("");
+            assert_eq!(spans.len(), 3);
+            assert_eq!(spans[1].content, "--");
+        }
+
+        #[test]
+        fn strong_signal_is_green() {
+            let spans = render_wifi_signal("-40dBm");
+            // Should have WiFi label, bars, space, signal value, space
+            assert_eq!(spans.len(), 5);
+            assert_eq!(spans[1].style.fg, Some(Color::Green));
+            assert_eq!(spans[3].content, "-40dBm");
+        }
+
+        #[test]
+        fn medium_signal_is_yellow() {
+            let spans = render_wifi_signal("-60dBm");
+            assert_eq!(spans.len(), 5);
+            assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        }
+
+        #[test]
+        fn weak_signal_is_red() {
+            let spans = render_wifi_signal("-80dBm");
+            assert_eq!(spans.len(), 5);
+            assert_eq!(spans[1].style.fg, Some(Color::Red));
+        }
+
+        #[test]
+        fn unparseable_signal_uses_default_weak() {
+            let spans = render_wifi_signal("unknown");
+            assert_eq!(spans.len(), 5);
+            // Default is -100 dBm which is weak (red)
+            assert_eq!(spans[1].style.fg, Some(Color::Red));
+        }
+
+        #[test]
+        fn boundary_strong_threshold() {
+            // -50 is not > -50, so should be medium (yellow)
+            let spans = render_wifi_signal("-50dBm");
+            assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        }
+
+        #[test]
+        fn boundary_medium_threshold() {
+            // -70 is not > -70, so should be weak (red)
+            let spans = render_wifi_signal("-70dBm");
+            assert_eq!(spans[1].style.fg, Some(Color::Red));
+        }
+
+        #[test]
+        fn just_above_strong_threshold() {
+            // -49 > -50, so should be strong (green)
+            let spans = render_wifi_signal("-49dBm");
+            assert_eq!(spans[1].style.fg, Some(Color::Green));
+        }
+    }
+
+    mod hms_severity_constants_tests {
+        use super::*;
+
+        #[test]
+        fn severity_warning_is_one() {
+            assert_eq!(HMS_SEVERITY_WARNING, 1);
+        }
+
+        #[test]
+        fn severity_error_is_two() {
+            assert_eq!(HMS_SEVERITY_ERROR, 2);
+        }
     }
 }

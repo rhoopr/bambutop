@@ -109,6 +109,11 @@ pub fn gcode_state_to_status(gcode_state: GcodeState) -> &'static str {
     }
 }
 
+/// Converts a temperature from Celsius to Fahrenheit.
+pub fn celsius_to_fahrenheit(celsius: f32) -> f32 {
+    celsius * 9.0 / 5.0 + 32.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +262,31 @@ mod tests {
         #[test]
         fn handles_serial_with_letters() {
             assert_eq!(extract_serial_suffix("01P00AABCD"), "ABCD");
+        }
+    }
+
+    mod celsius_to_fahrenheit_tests {
+        use super::*;
+
+        #[test]
+        fn converts_freezing_point() {
+            assert_eq!(celsius_to_fahrenheit(0.0), 32.0);
+        }
+
+        #[test]
+        fn converts_boiling_point() {
+            assert_eq!(celsius_to_fahrenheit(100.0), 212.0);
+        }
+
+        #[test]
+        fn converts_negative_forty() {
+            assert_eq!(celsius_to_fahrenheit(-40.0), -40.0);
+        }
+
+        #[test]
+        fn converts_typical_nozzle_temps() {
+            assert_eq!(celsius_to_fahrenheit(200.0), 392.0);
+            assert_eq!(celsius_to_fahrenheit(230.0), 446.0);
         }
     }
 

@@ -61,15 +61,18 @@ pub fn run_setup_wizard() -> Result<Config> {
         println!("Printer added successfully!");
     }
 
+    let mut printers = vec![PrinterConfig {
+        name: None,
+        ip: primary_ip,
+        serial: primary_serial,
+        access_code: primary_access_code,
+        port: crate::config::DEFAULT_MQTT_PORT,
+    }];
+    printers.extend(extra_printers);
+
     let config = Config {
-        printer: PrinterConfig {
-            name: None,
-            ip: primary_ip,
-            serial: primary_serial,
-            access_code: primary_access_code,
-            port: crate::config::DEFAULT_MQTT_PORT,
-        },
-        extra_printers,
+        printers,
+        ..Config::default()
     };
 
     config.save()?;
@@ -77,7 +80,7 @@ pub fn run_setup_wizard() -> Result<Config> {
     let config_path = Config::config_path()?;
     println!();
     println!("Configuration saved to: {}", config_path.display());
-    let printer_count = 1 + config.extra_printers.len();
+    let printer_count = config.printers.len();
     if printer_count > 1 {
         println!("  {printer_count} printers configured.");
     }
@@ -91,15 +94,13 @@ fn prompt_ip(label: &str) -> Result<String> {
     loop {
         let input = prompt(label)?;
 
-        // Try to parse as IP address
-        match input.parse::<IpAddr>() {
-            Ok(_) => return Ok(input),
-            Err(_) => {
-                println!("  Invalid IP address format. Please enter a valid IPv4 or IPv6 address.");
-                println!("  Example: 192.168.1.100");
-                continue;
-            }
+        if let Err(msg) = validate_ip(&input) {
+            println!("  {msg}");
+            println!("  Example: 192.168.1.100");
+            continue;
         }
+
+        return Ok(input);
     }
 }
 
@@ -108,16 +109,11 @@ fn prompt_serial(label: &str) -> Result<String> {
     loop {
         let input = prompt(label)?;
 
-        // Bambu serial numbers are typically 15 alphanumeric characters
-        if input.len() < 3 {
-            println!("  Serial number seems too short. Bambu serial numbers are typically {EXPECTED_SERIAL_LENGTH} characters.");
-            println!("  Example: 01P00A000000000");
-            continue;
-        }
-
-        // Check for valid characters (alphanumeric only)
-        if !input.chars().all(|c| c.is_ascii_alphanumeric()) {
-            println!("  Serial number should only contain letters and numbers.");
+        if let Err(msg) = validate_serial(&input) {
+            println!("  {msg}");
+            if input.len() < 3 {
+                println!("  Example: 01P00A000000000");
+            }
             continue;
         }
 
@@ -139,18 +135,11 @@ fn prompt_access_code(label: &str) -> Result<String> {
     loop {
         let input = prompt(label)?;
 
-        // Bambu access codes are typically 8 alphanumeric characters
-        if input.len() < MIN_ACCESS_CODE_LENGTH {
-            println!(
-                "  Access code seems too short (minimum {MIN_ACCESS_CODE_LENGTH} characters)."
-            );
-            println!("  Access codes are found in printer settings under LAN mode.");
-            continue;
-        }
-
-        // Check for valid characters
-        if !input.chars().all(|c| c.is_ascii_alphanumeric()) {
-            println!("  Access code should only contain letters and numbers.");
+        if let Err(msg) = validate_access_code(&input) {
+            println!("  {msg}");
+            if input.len() < MIN_ACCESS_CODE_LENGTH {
+                println!("  Access codes are found in printer settings under LAN mode.");
+            }
             continue;
         }
 
@@ -201,6 +190,39 @@ fn prompt_optional(label: &str) -> Result<Option<String>> {
     }
 }
 
+/// Validates an IP address string. Returns `Ok(())` if valid, `Err` with message if not.
+pub(crate) fn validate_ip(input: &str) -> Result<(), &'static str> {
+    input
+        .parse::<IpAddr>()
+        .map(|_| ())
+        .map_err(|_| "Invalid IP address format. Please enter a valid IPv4 or IPv6 address.")
+}
+
+/// Validates a serial number. Returns `Ok(())` if valid, `Err` with message if not.
+/// Non-standard lengths are allowed (the caller may warn separately).
+pub(crate) fn validate_serial(input: &str) -> Result<(), &'static str> {
+    if input.len() < 3 {
+        return Err(
+            "Serial number seems too short. Bambu serial numbers are typically 15 characters.",
+        );
+    }
+    if !input.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Serial number should only contain letters and numbers.");
+    }
+    Ok(())
+}
+
+/// Validates an access code. Returns `Ok(())` if valid, `Err` with message if not.
+pub(crate) fn validate_access_code(input: &str) -> Result<(), &'static str> {
+    if input.len() < MIN_ACCESS_CODE_LENGTH {
+        return Err("Access code seems too short (minimum 4 characters).");
+    }
+    if !input.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Access code should only contain letters and numbers.");
+    }
+    Ok(())
+}
+
 /// Prompts for a yes/no response. Returns true for 'y'/'yes', false for 'n'/'no'.
 fn prompt_yes_no(label: &str) -> Result<bool> {
     loop {
@@ -226,5 +248,189 @@ fn prompt_yes_no(label: &str) -> Result<bool> {
                 continue;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_access_code, validate_ip, validate_serial};
+
+    // --- validate_ip ---
+
+    #[test]
+    fn ip_valid_ipv4() {
+        assert!(validate_ip("192.168.1.100").is_ok());
+    }
+
+    #[test]
+    fn ip_valid_ipv4_loopback() {
+        assert!(validate_ip("127.0.0.1").is_ok());
+    }
+
+    #[test]
+    fn ip_valid_ipv4_zeros() {
+        assert!(validate_ip("0.0.0.0").is_ok());
+    }
+
+    #[test]
+    fn ip_valid_ipv6_loopback() {
+        assert!(validate_ip("::1").is_ok());
+    }
+
+    #[test]
+    fn ip_valid_ipv6_full() {
+        assert!(validate_ip("fe80::1").is_ok());
+    }
+
+    #[test]
+    fn ip_valid_ipv6_long() {
+        assert!(validate_ip("2001:0db8:85a3:0000:0000:8a2e:0370:7334").is_ok());
+    }
+
+    #[test]
+    fn ip_empty_string() {
+        assert!(validate_ip("").is_err());
+    }
+
+    #[test]
+    fn ip_hostname_rejected() {
+        assert!(validate_ip("printer.local").is_err());
+    }
+
+    #[test]
+    fn ip_malformed_extra_octets() {
+        assert!(validate_ip("192.168.1.1.1").is_err());
+    }
+
+    #[test]
+    fn ip_malformed_letters() {
+        assert!(validate_ip("abc.def.ghi.jkl").is_err());
+    }
+
+    #[test]
+    fn ip_malformed_octet_out_of_range() {
+        assert!(validate_ip("256.1.1.1").is_err());
+    }
+
+    #[test]
+    fn ip_whitespace_only() {
+        assert!(validate_ip("  ").is_err());
+    }
+
+    #[test]
+    fn ip_with_port() {
+        assert!(validate_ip("192.168.1.1:8080").is_err());
+    }
+
+    // --- validate_serial ---
+
+    #[test]
+    fn serial_valid_standard_length() {
+        assert!(validate_serial("01P00A000000000").is_ok());
+    }
+
+    #[test]
+    fn serial_valid_nonstandard_length() {
+        // Shorter than 15 but >= 3 and alphanumeric: valid (caller warns)
+        assert!(validate_serial("ABC").is_ok());
+        assert!(validate_serial("ABCDEF1234").is_ok());
+        assert!(validate_serial("01P00A0000000001234").is_ok());
+    }
+
+    #[test]
+    fn serial_too_short_empty() {
+        assert!(validate_serial("").is_err());
+    }
+
+    #[test]
+    fn serial_too_short_one_char() {
+        assert!(validate_serial("A").is_err());
+    }
+
+    #[test]
+    fn serial_too_short_two_chars() {
+        assert!(validate_serial("AB").is_err());
+    }
+
+    #[test]
+    fn serial_boundary_three_chars() {
+        assert!(validate_serial("ABC").is_ok());
+    }
+
+    #[test]
+    fn serial_non_alphanumeric_dash() {
+        assert!(validate_serial("01P-00A000000000").is_err());
+    }
+
+    #[test]
+    fn serial_non_alphanumeric_space() {
+        assert!(validate_serial("01P 0A000000000").is_err());
+    }
+
+    #[test]
+    fn serial_non_alphanumeric_underscore() {
+        assert!(validate_serial("01P_0A000000000").is_err());
+    }
+
+    #[test]
+    fn serial_non_alphanumeric_special() {
+        assert!(validate_serial("ABC!@#").is_err());
+    }
+
+    #[test]
+    fn serial_unicode_rejected() {
+        assert!(validate_serial("01P00A00000\u{00e9}000").is_err());
+    }
+
+    // --- validate_access_code ---
+
+    #[test]
+    fn access_code_valid_typical() {
+        assert!(validate_access_code("12345678").is_ok());
+    }
+
+    #[test]
+    fn access_code_valid_minimum_length() {
+        assert!(validate_access_code("abcd").is_ok());
+    }
+
+    #[test]
+    fn access_code_valid_mixed_case() {
+        assert!(validate_access_code("AbCd1234").is_ok());
+    }
+
+    #[test]
+    fn access_code_too_short_empty() {
+        assert!(validate_access_code("").is_err());
+    }
+
+    #[test]
+    fn access_code_too_short_one() {
+        assert!(validate_access_code("a").is_err());
+    }
+
+    #[test]
+    fn access_code_too_short_three() {
+        assert!(validate_access_code("abc").is_err());
+    }
+
+    #[test]
+    fn access_code_non_alphanumeric_dash() {
+        assert!(validate_access_code("abcd-efgh").is_err());
+    }
+
+    #[test]
+    fn access_code_non_alphanumeric_space() {
+        assert!(validate_access_code("abcd efgh").is_err());
+    }
+
+    #[test]
+    fn access_code_non_alphanumeric_special() {
+        assert!(validate_access_code("abc!@#$%").is_err());
+    }
+
+    #[test]
+    fn access_code_unicode_rejected() {
+        assert!(validate_access_code("abcd\u{00e9}fgh").is_err());
     }
 }

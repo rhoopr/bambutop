@@ -25,10 +25,7 @@ const ACTIVE_TEMP_THRESHOLD: f32 = 50.0;
 /// Temperature difference threshold for considering temp "at target" (in Celsius)
 const AT_TARGET_THRESHOLD: f32 = 5.0;
 
-/// Converts a temperature from Celsius to Fahrenheit.
-fn celsius_to_fahrenheit(celsius: f32) -> f32 {
-    celsius * 9.0 / 5.0 + 32.0
-}
+use super::common::celsius_to_fahrenheit;
 
 /// Formats a temperature value with the appropriate unit symbol.
 fn format_temp(celsius: f32, use_celsius: bool) -> String {

@@ -1,6 +1,6 @@
 [package]
 name = "bambutop"
-version = "0.4.2"
+version = "1.0.0"
 edition = "2021"
 description = "Terminal-based status monitor for Bambu Labs printers"
 license = "GPL-3.0"
@@ -27,6 +27,12 @@ dirs = "5"
 
 # CLI (disable color/suggestions to reduce binary size)
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+
+# System
+libc = "0.2"
+
+# Desktop notifications
+notify-rust = "4"
 
 # Error handling
 anyhow = "1"

@@ -28,7 +28,14 @@ const FALLBACK_CHANNEL_CAPACITY: usize = 100;
 /// Capacity of the internal rumqttc request channel between AsyncClient and EventLoop
 const MQTT_EVENT_QUEUE_CAPACITY: usize = 10;
 
-/// Certificate verifier that accepts any certificate (for self-signed Bambu certs)
+/// Certificate verifier that accepts any certificate (for self-signed Bambu certs).
+///
+/// **Accepted risk**: Bambu printers use self-signed certificates that are
+/// regenerated on firmware updates, making traditional pinning impractical.
+/// All major Bambu tools (OrcaSlicer, Bambu Studio) skip verification for the
+/// same reason. Since connections are to user-configured IPs on the local
+/// network, the practical MITM risk is low. See #20 for future certificate
+/// pinning consideration.
 #[derive(Debug)]
 struct NoVerifier;
 
@@ -150,7 +157,7 @@ impl MqttClient {
 
         // Initialize state from config
         {
-            let mut state_guard = state.lock().expect("state lock poisoned");
+            let mut state_guard = state.lock().unwrap_or_else(|e| e.into_inner());
             state_guard.set_model_from_serial(&config.serial);
             // Set config name if provided
             if let Some(name) = &config.name {
@@ -206,16 +213,23 @@ impl MqttClient {
                             continue;
                         }
                         {
-                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard =
+                                state_clone.lock().unwrap_or_else(|e| e.into_inner());
                             state_guard.connected = true;
                         }
                         // Re-subscribe on every (re)connection. The broker drops
                         // all subscriptions for clean sessions, so without this
                         // the client stays connected but never receives data after
                         // a reconnect — the root cause of stale printer state.
-                        let _ = event_client
+                        if let Err(e) = event_client
                             .subscribe(&event_report_topic, QoS::AtMostOnce)
-                            .await;
+                            .await
+                        {
+                            let _ = event_tx.try_send(MqttEvent::Error {
+                                printer_index,
+                                message: format!("Re-subscribe failed: {e}"),
+                            });
+                        }
                         // Request full printer state and version info so we have
                         // current data immediately rather than waiting for the
                         // next periodic push.
@@ -223,9 +237,15 @@ impl MqttClient {
                             r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#,
                             r#"{"info":{"sequence_id":"0","command":"get_version"}}"#,
                         ] {
-                            let _ = event_client
+                            if let Err(e) = event_client
                                 .publish(&event_request_topic, QoS::AtMostOnce, false, payload)
-                                .await;
+                                .await
+                            {
+                                let _ = event_tx.try_send(MqttEvent::Error {
+                                    printer_index,
+                                    message: format!("Initial status request failed: {e}"),
+                                });
+                            }
                         }
                         let _ = event_tx.try_send(MqttEvent::Connected { printer_index });
                     }
@@ -234,7 +254,7 @@ impl MqttClient {
                             if let Ok(msg) = serde_json::from_str::<MqttMessage>(payload) {
                                 {
                                     let mut state_guard =
-                                        state_clone.lock().expect("state lock poisoned");
+                                        state_clone.lock().unwrap_or_else(|e| e.into_inner());
                                     state_guard.update_from_message(&msg);
                                 }
                                 let _ =
@@ -249,7 +269,8 @@ impl MqttClient {
                     Ok(_) => {}
                     Err(e) => {
                         {
-                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard =
+                                state_clone.lock().unwrap_or_else(|e| e.into_inner());
                             state_guard.connected = false;
                         }
                         let _ = event_tx.try_send(MqttEvent::Disconnected { printer_index });
@@ -343,12 +364,7 @@ impl MqttClient {
 
     pub async fn request_full_status(&self) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "pushing": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "pushall"
-                }
-            }),
+            pushall_payload(&self.next_sequence_id()),
             QoS::AtMostOnce,
             "request full status",
         )
@@ -358,12 +374,7 @@ impl MqttClient {
     /// Requests firmware/hardware version information from the printer.
     pub async fn request_version_info(&self) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "info": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "get_version"
-                }
-            }),
+            version_info_payload(&self.next_sequence_id()),
             QoS::AtMostOnce,
             "request version info",
         )
@@ -376,13 +387,7 @@ impl MqttClient {
     /// * `level` - Speed level: 1=Silent, 2=Standard, 3=Sport, 4=Ludicrous
     pub async fn set_speed_level(&self, level: u8) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "print": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "print_speed",
-                    "param": level.to_string()
-                }
-            }),
+            speed_level_payload(&self.next_sequence_id(), level),
             QoS::AtLeastOnce,
             "set speed level",
         )
@@ -392,14 +397,7 @@ impl MqttClient {
     /// Sets the chamber light on or off.
     pub async fn set_chamber_light(&self, on: bool) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "system": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "ledctrl",
-                    "led_node": "chamber_light",
-                    "led_mode": if on { "on" } else { "off" }
-                }
-            }),
+            light_payload(&self.next_sequence_id(), "chamber_light", on),
             QoS::AtLeastOnce,
             "set chamber light",
         )
@@ -409,14 +407,7 @@ impl MqttClient {
     /// Sets the work light on or off.
     pub async fn set_work_light(&self, on: bool) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "system": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "ledctrl",
-                    "led_node": "work_light",
-                    "led_mode": if on { "on" } else { "off" }
-                }
-            }),
+            light_payload(&self.next_sequence_id(), "work_light", on),
             QoS::AtLeastOnce,
             "set work light",
         )
@@ -426,12 +417,7 @@ impl MqttClient {
     /// Pauses the current print job.
     pub async fn pause_print(&self) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "print": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "pause"
-                }
-            }),
+            print_command_payload(&self.next_sequence_id(), "pause"),
             QoS::AtLeastOnce,
             "pause print",
         )
@@ -441,12 +427,7 @@ impl MqttClient {
     /// Resumes a paused print job.
     pub async fn resume_print(&self) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "print": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "resume"
-                }
-            }),
+            print_command_payload(&self.next_sequence_id(), "resume"),
             QoS::AtLeastOnce,
             "resume print",
         )
@@ -456,12 +437,7 @@ impl MqttClient {
     /// Stops/cancels the current print job.
     pub async fn stop_print(&self) -> Result<()> {
         self.publish_command(
-            serde_json::json!({
-                "print": {
-                    "sequence_id": self.next_sequence_id(),
-                    "command": "stop"
-                }
-            }),
+            print_command_payload(&self.next_sequence_id(), "stop"),
             QoS::AtLeastOnce,
             "stop print",
         )
@@ -479,9 +455,197 @@ impl MqttClient {
     }
 }
 
+/// Builds a "pushall" payload to request the printer's full state.
+fn pushall_payload(sequence_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "pushing": {
+            "sequence_id": sequence_id,
+            "command": "pushall"
+        }
+    })
+}
+
+/// Builds a "get_version" payload.
+fn version_info_payload(sequence_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "info": {
+            "sequence_id": sequence_id,
+            "command": "get_version"
+        }
+    })
+}
+
+/// Builds a "print_speed" payload with the given level.
+fn speed_level_payload(sequence_id: &str, level: u8) -> serde_json::Value {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id,
+            "command": "print_speed",
+            "param": level.to_string()
+        }
+    })
+}
+
+/// Builds an LED control payload for the given node.
+fn light_payload(sequence_id: &str, led_node: &str, on: bool) -> serde_json::Value {
+    serde_json::json!({
+        "system": {
+            "sequence_id": sequence_id,
+            "command": "ledctrl",
+            "led_node": led_node,
+            "led_mode": if on { "on" } else { "off" }
+        }
+    })
+}
+
+/// Builds a print control payload (pause, resume, stop).
+fn print_command_payload(sequence_id: &str, command: &str) -> serde_json::Value {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id,
+            "command": command
+        }
+    })
+}
+
 impl Drop for MqttClient {
     fn drop(&mut self) {
         // Abort the event loop task on drop for clean shutdown
         self.event_loop_handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod payload_tests {
+        use super::*;
+
+        #[test]
+        fn pushall_has_correct_structure() {
+            let payload = pushall_payload("42");
+            assert_eq!(payload["pushing"]["command"], "pushall");
+            assert_eq!(payload["pushing"]["sequence_id"], "42");
+        }
+
+        #[test]
+        fn version_info_has_correct_structure() {
+            let payload = version_info_payload("7");
+            assert_eq!(payload["info"]["command"], "get_version");
+            assert_eq!(payload["info"]["sequence_id"], "7");
+        }
+
+        #[test]
+        fn speed_level_encodes_param_as_string() {
+            let payload = speed_level_payload("10", 3);
+            assert_eq!(payload["print"]["command"], "print_speed");
+            assert_eq!(payload["print"]["param"], "3");
+            assert_eq!(payload["print"]["sequence_id"], "10");
+        }
+
+        #[test]
+        fn chamber_light_on() {
+            let payload = light_payload("1", "chamber_light", true);
+            assert_eq!(payload["system"]["command"], "ledctrl");
+            assert_eq!(payload["system"]["led_node"], "chamber_light");
+            assert_eq!(payload["system"]["led_mode"], "on");
+        }
+
+        #[test]
+        fn chamber_light_off() {
+            let payload = light_payload("2", "chamber_light", false);
+            assert_eq!(payload["system"]["led_mode"], "off");
+        }
+
+        #[test]
+        fn work_light_on() {
+            let payload = light_payload("3", "work_light", true);
+            assert_eq!(payload["system"]["led_node"], "work_light");
+            assert_eq!(payload["system"]["led_mode"], "on");
+        }
+
+        #[test]
+        fn pause_command() {
+            let payload = print_command_payload("5", "pause");
+            assert_eq!(payload["print"]["command"], "pause");
+            assert_eq!(payload["print"]["sequence_id"], "5");
+        }
+
+        #[test]
+        fn resume_command() {
+            let payload = print_command_payload("6", "resume");
+            assert_eq!(payload["print"]["command"], "resume");
+        }
+
+        #[test]
+        fn stop_command() {
+            let payload = print_command_payload("7", "stop");
+            assert_eq!(payload["print"]["command"], "stop");
+        }
+    }
+
+    mod topic_tests {
+        #[test]
+        fn report_topic_format() {
+            let serial = "01S00C123456";
+            let topic = format!("device/{serial}/report");
+            assert_eq!(topic, "device/01S00C123456/report");
+        }
+
+        #[test]
+        fn request_topic_format() {
+            let serial = "01S00C123456";
+            let topic = format!("device/{serial}/request");
+            assert_eq!(topic, "device/01S00C123456/request");
+        }
+    }
+
+    mod sequence_id_tests {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        #[test]
+        fn sequence_ids_are_monotonically_increasing() {
+            let counter = AtomicU64::new(1);
+            let first = counter.fetch_add(1, Ordering::Relaxed);
+            let second = counter.fetch_add(1, Ordering::Relaxed);
+            let third = counter.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(first, 1);
+            assert_eq!(second, 2);
+            assert_eq!(third, 3);
+        }
+
+        #[test]
+        fn sequence_id_starts_at_one() {
+            // MqttClient initializes sequence_id at 1, so first fetch_add returns 1
+            let counter = AtomicU64::new(1);
+            let id = counter.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(id.to_string(), "1");
+        }
+    }
+
+    mod no_verifier_tests {
+        use super::*;
+        use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+        #[test]
+        fn accepts_any_server_certificate() {
+            let verifier = NoVerifier;
+            let dummy_cert = CertificateDer::from(vec![0u8; 32]);
+            let server_name = ServerName::try_from("example.com").unwrap();
+            let result =
+                verifier.verify_server_cert(&dummy_cert, &[], &server_name, &[], UnixTime::now());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn supports_common_signature_schemes() {
+            let verifier = NoVerifier;
+            let schemes = verifier.supported_verify_schemes();
+            assert!(!schemes.is_empty());
+            assert!(schemes.contains(&SignatureScheme::RSA_PKCS1_SHA256));
+            assert!(schemes.contains(&SignatureScheme::ECDSA_NISTP256_SHA256));
+            assert!(schemes.contains(&SignatureScheme::ED25519));
+        }
     }
 }

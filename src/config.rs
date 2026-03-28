@@ -31,43 +31,39 @@ use std::path::PathBuf;
 /// Default MQTT port for Bambu printers (TLS)
 pub const DEFAULT_MQTT_PORT: u16 = 8883;
 
+/// Desktop notification settings.
+///
+/// Controls which events trigger system notifications.
+/// Both default to `true` when absent from the config file.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NotificationConfig {
+    /// Notify on print failures and new HMS errors.
+    pub errors: bool,
+    /// Notify on print completions.
+    pub completions: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            errors: true,
+            completions: true,
+        }
+    }
+}
+
 /// Application configuration stored in `~/.config/bambutop/config.toml`.
 ///
-/// Supports both the new multi-printer format (`[[printers]]` array) and the
-/// legacy single-printer format (`[printer]` section) for backwards compatibility.
-///
-/// The `printer` field is maintained for backwards compatibility with existing code
-/// that constructs and accesses configs using `config.printer`. New code should use
-/// `config.all_printers()` to access all configured printers.
-///
-/// # Ordering Guarantee
-///
-/// Printers are returned in a deterministic order that is preserved across restarts:
-/// 1. The primary `printer` field (first printer from config file)
-/// 2. The `extra_printers` in the order they appear in the config file
-///
-/// This order matches the order in which printers appear in the `[[printers]]` array
-/// in the TOML config file.
-///
-/// When constructing with struct literal syntax, the `extra_printers` field can be
-/// omitted by using `..Default::default()`:
-/// ```ignore
-/// Config {
-///     printer: PrinterConfig { ... },
-///     ..Default::default()
-/// }
-/// ```
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+/// Loads both the `[[printers]]` array format and legacy `[printer]` section.
+/// Legacy configs are auto-migrated to the new format on save.
+/// Printer order is preserved across restarts.
+#[derive(Debug, Clone, Default)]
 pub struct Config {
-    /// Primary printer configuration (for backwards compatibility).
-    /// When using multi-printer setups, this will be the first printer.
-    #[serde(default)]
-    pub printer: PrinterConfig,
-
-    /// Additional printer configurations (new multi-printer format).
-    /// This does NOT include the primary printer - use `all_printers()` method to get all.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_printers: Vec<PrinterConfig>,
+    /// All configured printers in deterministic order.
+    pub printers: Vec<PrinterConfig>,
+    /// Desktop notification preferences.
+    pub notifications: NotificationConfig,
 }
 
 /// Raw configuration format for deserializing config files.
@@ -79,11 +75,15 @@ struct RawConfig {
     /// New multi-printer array (optional when using legacy format).
     #[serde(default)]
     printers: Vec<PrinterConfig>,
+    /// Desktop notification preferences.
+    #[serde(default)]
+    notifications: NotificationConfig,
 }
 
 /// Serialization format for saving configs in the new multi-printer format.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct SaveConfig {
+    notifications: NotificationConfig,
     printers: Vec<PrinterConfig>,
 }
 
@@ -160,7 +160,7 @@ impl Config {
             toml::from_str(content).with_context(|| "Failed to parse config TOML")?;
 
         // Determine which format was used and build the config
-        let all_printers = if !raw.printers.is_empty() {
+        let printers = if !raw.printers.is_empty() {
             // New format: [[printers]] array
             raw.printers
         } else if let Some(printer) = raw.printer {
@@ -170,16 +170,14 @@ impl Config {
             anyhow::bail!("Config must have either [printer] or [[printers]] section");
         };
 
-        // Split into primary printer and extras for backwards compatibility
-        let mut printers_iter = all_printers.into_iter();
-        let printer = printers_iter
-            .next()
-            .context("Config must have at least one printer")?;
-        let extra_printers: Vec<PrinterConfig> = printers_iter.collect();
+        anyhow::ensure!(
+            !printers.is_empty(),
+            "Config must have at least one printer"
+        );
 
         Ok(Config {
-            printer,
-            extra_printers,
+            printers,
+            notifications: raw.notifications,
         })
     }
 
@@ -196,15 +194,24 @@ impl Config {
             })?;
         }
 
-        // Serialize using the new multi-printer format
+        // Serialize using the multi-printer format
         let save_config = SaveConfig {
-            printers: self.all_printers(),
+            notifications: self.notifications.clone(),
+            printers: self.printers.clone(),
         };
         let content =
             toml::to_string_pretty(&save_config).with_context(|| "Failed to serialize config")?;
 
-        fs::write(&config_path, content)
+        fs::write(&config_path, &content)
             .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
+
+        // Restrict config file permissions to owner-only since it contains access codes
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
+                .with_context(|| "Failed to set config file permissions")?;
+        }
 
         Ok(())
     }
@@ -219,26 +226,6 @@ impl Config {
     pub fn config_path() -> Result<PathBuf> {
         let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(".config").join("bambutop").join("config.toml"))
-    }
-
-    /// Returns all configured printers as a Vec in deterministic order.
-    ///
-    /// This combines the primary `printer` field with any `extra_printers`.
-    /// This is the preferred way to access all printer configurations.
-    ///
-    /// # Ordering
-    ///
-    /// Printers are returned in a stable, deterministic order:
-    /// 1. The primary printer (index 0)
-    /// 2. Extra printers in the order they were added/loaded (indices 1, 2, ...)
-    ///
-    /// This order matches the `[[printers]]` array order in the config file and
-    /// is preserved across application restarts.
-    pub fn all_printers(&self) -> Vec<PrinterConfig> {
-        let mut all = Vec::with_capacity(1 + self.extra_printers.len());
-        all.push(self.printer.clone());
-        all.extend(self.extra_printers.iter().cloned());
-        all
     }
 }
 
@@ -257,12 +244,12 @@ access_code = "12345678"
 
         let config = Config::parse(content).expect("Failed to parse legacy config");
 
-        assert_eq!(config.all_printers().len(), 1);
-        assert_eq!(config.printer.ip, "192.168.1.100");
-        assert_eq!(config.printer.serial, "01P00A000000000");
-        assert_eq!(config.printer.access_code, "12345678");
-        assert_eq!(config.printer.port, DEFAULT_MQTT_PORT);
-        assert!(config.printer.name.is_none());
+        assert_eq!(config.printers.len(), 1);
+        assert_eq!(config.printers[0].ip, "192.168.1.100");
+        assert_eq!(config.printers[0].serial, "01P00A000000000");
+        assert_eq!(config.printers[0].access_code, "12345678");
+        assert_eq!(config.printers[0].port, DEFAULT_MQTT_PORT);
+        assert!(config.printers[0].name.is_none());
     }
 
     #[test]
@@ -277,7 +264,7 @@ port = 9000
 
         let config = Config::parse(content).expect("Failed to parse legacy config with port");
 
-        assert_eq!(config.printer.port, 9000);
+        assert_eq!(config.printers[0].port, 9000);
     }
 
     #[test]
@@ -292,12 +279,12 @@ access_code = "12345678"
 
         let config = Config::parse(content).expect("Failed to parse new single printer config");
 
-        assert_eq!(config.all_printers().len(), 1);
-        assert_eq!(config.printer.name.as_deref(), Some("Office P1S"));
-        assert_eq!(config.printer.ip, "192.168.1.100");
-        assert_eq!(config.printer.serial, "01P00A000000000");
-        assert_eq!(config.printer.access_code, "12345678");
-        assert_eq!(config.printer.port, DEFAULT_MQTT_PORT);
+        assert_eq!(config.printers.len(), 1);
+        assert_eq!(config.printers[0].name.as_deref(), Some("Office P1S"));
+        assert_eq!(config.printers[0].ip, "192.168.1.100");
+        assert_eq!(config.printers[0].serial, "01P00A000000000");
+        assert_eq!(config.printers[0].access_code, "12345678");
+        assert_eq!(config.printers[0].port, DEFAULT_MQTT_PORT);
     }
 
     #[test]
@@ -318,22 +305,13 @@ access_code = "87654321"
 
         let config = Config::parse(content).expect("Failed to parse multi-printer config");
 
-        let all = config.all_printers();
-        assert_eq!(all.len(), 2);
-
-        assert_eq!(all[0].name.as_deref(), Some("Office P1S"));
-        assert_eq!(all[0].ip, "192.168.1.100");
-        assert_eq!(all[0].serial, "01P00A000000000");
-
-        assert_eq!(all[1].name.as_deref(), Some("Workshop X1C"));
-        assert_eq!(all[1].ip, "192.168.1.101");
-        assert_eq!(all[1].serial, "00M00B111111111");
-
-        // Verify primary printer is first one
-        assert_eq!(config.printer.ip, "192.168.1.100");
-        // Verify extra_printers has the second one
-        assert_eq!(config.extra_printers.len(), 1);
-        assert_eq!(config.extra_printers[0].ip, "192.168.1.101");
+        assert_eq!(config.printers.len(), 2);
+        assert_eq!(config.printers[0].name.as_deref(), Some("Office P1S"));
+        assert_eq!(config.printers[0].ip, "192.168.1.100");
+        assert_eq!(config.printers[0].serial, "01P00A000000000");
+        assert_eq!(config.printers[1].name.as_deref(), Some("Workshop X1C"));
+        assert_eq!(config.printers[1].ip, "192.168.1.101");
+        assert_eq!(config.printers[1].serial, "00M00B111111111");
     }
 
     #[test]
@@ -347,25 +325,26 @@ access_code = "12345678"
 
         let config = Config::parse(content).expect("Failed to parse config without name");
 
-        assert!(config.printer.name.is_none());
-        assert_eq!(config.printer.ip, "192.168.1.100");
+        assert!(config.printers[0].name.is_none());
+        assert_eq!(config.printers[0].ip, "192.168.1.100");
     }
 
     #[test]
     fn test_serialize_to_new_format() {
         let config = Config {
-            printer: PrinterConfig {
+            printers: vec![PrinterConfig {
                 name: Some("My Printer".to_string()),
                 ip: "192.168.1.100".to_string(),
                 serial: "01P00A000000000".to_string(),
                 access_code: "12345678".to_string(),
                 port: DEFAULT_MQTT_PORT,
-            },
-            extra_printers: vec![],
+            }],
+            ..Config::default()
         };
 
         let save_config = SaveConfig {
-            printers: config.all_printers(),
+            printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -381,24 +360,28 @@ access_code = "12345678"
     #[test]
     fn test_serialize_multiple_printers() {
         let config = Config {
-            printer: PrinterConfig {
-                name: Some("Printer 1".to_string()),
-                ip: "192.168.1.100".to_string(),
-                serial: "SERIAL1".to_string(),
-                access_code: "CODE1".to_string(),
-                port: DEFAULT_MQTT_PORT,
-            },
-            extra_printers: vec![PrinterConfig {
-                name: Some("Printer 2".to_string()),
-                ip: "192.168.1.101".to_string(),
-                serial: "SERIAL2".to_string(),
-                access_code: "CODE2".to_string(),
-                port: DEFAULT_MQTT_PORT,
-            }],
+            printers: vec![
+                PrinterConfig {
+                    name: Some("Printer 1".to_string()),
+                    ip: "192.168.1.100".to_string(),
+                    serial: "SERIAL1".to_string(),
+                    access_code: "CODE1".to_string(),
+                    port: DEFAULT_MQTT_PORT,
+                },
+                PrinterConfig {
+                    name: Some("Printer 2".to_string()),
+                    ip: "192.168.1.101".to_string(),
+                    serial: "SERIAL2".to_string(),
+                    access_code: "CODE2".to_string(),
+                    port: DEFAULT_MQTT_PORT,
+                },
+            ],
+            ..Config::default()
         };
 
         let save_config = SaveConfig {
-            printers: config.all_printers(),
+            printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -413,18 +396,19 @@ access_code = "12345678"
     #[test]
     fn test_serialize_without_optional_name() {
         let config = Config {
-            printer: PrinterConfig {
+            printers: vec![PrinterConfig {
                 name: None,
                 ip: "192.168.1.100".to_string(),
                 serial: "01P00A000000000".to_string(),
                 access_code: "12345678".to_string(),
                 port: DEFAULT_MQTT_PORT,
-            },
-            extra_printers: vec![],
+            }],
+            ..Config::default()
         };
 
         let save_config = SaveConfig {
-            printers: config.all_printers(),
+            printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -437,18 +421,18 @@ access_code = "12345678"
     fn test_backwards_compatible_construction() {
         // Test that existing code pattern still works
         let config = Config {
-            printer: PrinterConfig {
+            printers: vec![PrinterConfig {
                 name: None,
                 ip: "192.168.1.1".to_string(),
                 serial: "SERIAL".to_string(),
                 access_code: "CODE".to_string(),
                 port: DEFAULT_MQTT_PORT,
-            },
-            extra_printers: vec![],
+            }],
+            ..Config::default()
         };
 
-        assert_eq!(config.all_printers().len(), 1);
-        assert_eq!(config.printer.ip, "192.168.1.1");
+        assert_eq!(config.printers.len(), 1);
+        assert_eq!(config.printers[0].ip, "192.168.1.1");
     }
 
     #[test]
@@ -465,7 +449,8 @@ access_code = "12345678"
 
         // Serialize to new format
         let save_config = SaveConfig {
-            printers: config.all_printers(),
+            printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let new_content = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -473,10 +458,10 @@ access_code = "12345678"
         let reparsed = Config::parse(&new_content).expect("Failed to reparse");
 
         // Verify data is preserved
-        assert_eq!(reparsed.all_printers().len(), 1);
-        assert_eq!(reparsed.printer.ip, "192.168.1.100");
-        assert_eq!(reparsed.printer.serial, "01P00A000000000");
-        assert_eq!(reparsed.printer.access_code, "12345678");
+        assert_eq!(reparsed.printers.len(), 1);
+        assert_eq!(reparsed.printers[0].ip, "192.168.1.100");
+        assert_eq!(reparsed.printers[0].serial, "01P00A000000000");
+        assert_eq!(reparsed.printers[0].access_code, "12345678");
     }
 
     #[test]
@@ -489,7 +474,7 @@ access_code = "CODE"
 "#;
 
         let config = Config::parse(content).expect("Failed to parse");
-        assert_eq!(config.printer.port, DEFAULT_MQTT_PORT);
+        assert_eq!(config.printers[0].port, DEFAULT_MQTT_PORT);
     }
 
     #[test]
@@ -503,7 +488,7 @@ port = 9999
 "#;
 
         let config = Config::parse(content).expect("Failed to parse");
-        assert_eq!(config.printer.port, 9999);
+        assert_eq!(config.printers[0].port, 9999);
     }
 
     #[test]
@@ -519,33 +504,32 @@ access_code = "12345678"
         let config = Config::parse(content).expect("Failed to parse");
 
         // Direct field access should work (backwards compatibility)
-        assert_eq!(config.printer.ip, "192.168.1.100");
-        assert_eq!(config.printer.serial, "01P00A000000000");
-        assert_eq!(config.printer.access_code, "12345678");
+        assert_eq!(config.printers[0].ip, "192.168.1.100");
+        assert_eq!(config.printers[0].serial, "01P00A000000000");
+        assert_eq!(config.printers[0].access_code, "12345678");
     }
 
     #[test]
     fn test_mutable_printer_field_access() {
-        // Verify backwards compatibility with mutable field access
         let mut config = Config {
-            printer: PrinterConfig {
+            printers: vec![PrinterConfig {
                 name: None,
                 ip: "192.168.1.100".to_string(),
                 serial: "SERIAL".to_string(),
                 access_code: "CODE".to_string(),
                 port: DEFAULT_MQTT_PORT,
-            },
-            extra_printers: vec![],
+            }],
+            ..Config::default()
         };
 
         // Mutable field access should work (backwards compatibility)
-        config.printer.ip = "192.168.1.200".to_string();
-        config.printer.serial = "NEW_SERIAL".to_string();
-        config.printer.access_code = "NEW_CODE".to_string();
+        config.printers[0].ip = "192.168.1.200".to_string();
+        config.printers[0].serial = "NEW_SERIAL".to_string();
+        config.printers[0].access_code = "NEW_CODE".to_string();
 
-        assert_eq!(config.printer.ip, "192.168.1.200");
-        assert_eq!(config.printer.serial, "NEW_SERIAL");
-        assert_eq!(config.printer.access_code, "NEW_CODE");
+        assert_eq!(config.printers[0].ip, "192.168.1.200");
+        assert_eq!(config.printers[0].serial, "NEW_SERIAL");
+        assert_eq!(config.printers[0].access_code, "NEW_CODE");
     }
 
     #[test]
@@ -572,13 +556,10 @@ access_code = "3"
 
         let config = Config::parse(content).expect("Failed to parse");
 
-        let all = config.all_printers();
-        assert_eq!(all.len(), 3);
-        assert_eq!(all[0].serial, "A");
-        assert_eq!(all[1].serial, "B");
-        assert_eq!(all[2].serial, "C");
-
-        assert_eq!(config.extra_printers.len(), 2);
+        assert_eq!(config.printers.len(), 3);
+        assert_eq!(config.printers[0].serial, "A");
+        assert_eq!(config.printers[1].serial, "B");
+        assert_eq!(config.printers[2].serial, "C");
     }
 
     /// Verifies that printer ordering is preserved through a full round-trip:
@@ -617,16 +598,16 @@ access_code = "444"
         let config = Config::parse(original_content).expect("Failed to parse original");
 
         // Verify initial ordering
-        let printers = config.all_printers();
-        assert_eq!(printers.len(), 4);
-        assert_eq!(printers[0].serial, "FIRST");
-        assert_eq!(printers[1].serial, "SECOND");
-        assert_eq!(printers[2].serial, "THIRD");
-        assert_eq!(printers[3].serial, "FOURTH");
+        assert_eq!(config.printers.len(), 4);
+        assert_eq!(config.printers[0].serial, "FIRST");
+        assert_eq!(config.printers[1].serial, "SECOND");
+        assert_eq!(config.printers[2].serial, "THIRD");
+        assert_eq!(config.printers[3].serial, "FOURTH");
 
         // Serialize to new format (simulating a save)
         let save_config = SaveConfig {
-            printers: config.all_printers(),
+            printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -634,24 +615,14 @@ access_code = "444"
         let reloaded = Config::parse(&serialized).expect("Failed to reparse");
 
         // Verify ordering is preserved after round-trip
-        let reloaded_printers = reloaded.all_printers();
-        assert_eq!(reloaded_printers.len(), 4);
-        assert_eq!(reloaded_printers[0].serial, "FIRST");
-        assert_eq!(reloaded_printers[0].name.as_deref(), Some("First Printer"));
-        assert_eq!(reloaded_printers[1].serial, "SECOND");
-        assert_eq!(reloaded_printers[1].name.as_deref(), Some("Second Printer"));
-        assert_eq!(reloaded_printers[2].serial, "THIRD");
-        assert_eq!(reloaded_printers[2].name.as_deref(), Some("Third Printer"));
-        assert_eq!(reloaded_printers[3].serial, "FOURTH");
-        assert_eq!(reloaded_printers[3].name.as_deref(), Some("Fourth Printer"));
-
-        // Verify primary printer is correct
-        assert_eq!(reloaded.printer.serial, "FIRST");
-
-        // Verify extra_printers order
-        assert_eq!(reloaded.extra_printers.len(), 3);
-        assert_eq!(reloaded.extra_printers[0].serial, "SECOND");
-        assert_eq!(reloaded.extra_printers[1].serial, "THIRD");
-        assert_eq!(reloaded.extra_printers[2].serial, "FOURTH");
+        assert_eq!(reloaded.printers.len(), 4);
+        assert_eq!(reloaded.printers[0].serial, "FIRST");
+        assert_eq!(reloaded.printers[0].name.as_deref(), Some("First Printer"));
+        assert_eq!(reloaded.printers[1].serial, "SECOND");
+        assert_eq!(reloaded.printers[1].name.as_deref(), Some("Second Printer"));
+        assert_eq!(reloaded.printers[2].serial, "THIRD");
+        assert_eq!(reloaded.printers[2].name.as_deref(), Some("Third Printer"));
+        assert_eq!(reloaded.printers[3].serial, "FOURTH");
+        assert_eq!(reloaded.printers[3].name.as_deref(), Some("Fourth Printer"));
     }
 }

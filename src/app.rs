@@ -4,9 +4,12 @@
 //! printer data, and UI preferences. It serves as the central state container
 //! that bridges MQTT events with the terminal UI.
 
+use crate::config::NotificationConfig;
 use crate::mqtt::{MqttEvent, SharedPrinterState};
-use crate::printer::PrinterState;
-use std::collections::VecDeque;
+use crate::printer::{GcodeState, PrinterState};
+use anyhow::{bail, Result};
+use std::collections::{HashSet, VecDeque};
+#[cfg(test)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,11 +22,6 @@ const STALE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
 
 /// Maximum number of toasts to display at once
 const MAX_TOASTS: usize = 3;
-
-/// Seconds per hour for timezone offset calculation
-const SECS_PER_HOUR: i32 = 3600;
-/// Seconds per minute for timezone offset calculation
-const SECS_PER_MINUTE: i32 = 60;
 
 /// View mode for the UI - single printer detail or aggregate overview
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,11 +62,6 @@ pub struct Toast {
 /// Manages the connection state, printer data, and UI preferences.
 /// Supports multiple printer connections with an active printer selection.
 pub struct App {
-    /// Shared printer state (updated by MQTT task) - kept for backward compatibility
-    pub printer_state: SharedPrinterState,
-    /// Whether the MQTT connection is active - kept for backward compatibility
-    pub connected: bool,
-    // Multi-printer state management fields used by main.rs and UI rendering.
     /// All printer states for multi-printer support
     printers: Vec<SharedPrinterState>,
     /// Connection status for each printer (parallel to printers vec)
@@ -85,10 +78,6 @@ pub struct App {
     printer_error_messages: Vec<Option<String>>,
     /// Index of the currently active/selected printer
     active_printer_index: usize,
-    /// Timestamp of the last state update from the printer
-    pub last_update: Option<Instant>,
-    /// Current error message to display, if any
-    pub error_message: Option<String>,
     /// Flag to signal the application should exit
     pub should_quit: bool,
     /// Whether printer controls are locked (prevents accidental changes)
@@ -115,6 +104,8 @@ pub struct App {
     cached_snapshots: Vec<PrinterState>,
     /// Dirty flags for each printer snapshot (set on StateUpdated, cleared by refresh).
     snapshot_dirty: Vec<bool>,
+    /// Desktop notification preferences (toggleable at runtime).
+    pub notifications: NotificationConfig,
 }
 
 impl App {
@@ -132,16 +123,12 @@ impl App {
         let printer_error_messages = vec![None];
 
         Self {
-            printer_state,
-            connected: false,
             printers,
             printer_connections,
             connected_count: 0,
             printer_last_updates,
             printer_error_messages,
             active_printer_index: 0,
-            last_update: None,
-            error_message: None,
             should_quit: false,
             controls_locked: true,
             use_celsius: true,
@@ -153,18 +140,23 @@ impl App {
             view_mode: ViewMode::Single,
             cached_snapshots: vec![initial_snapshot],
             snapshot_dirty: vec![true],
+            notifications: NotificationConfig::default(),
         }
     }
 
     /// Creates a new App instance with multiple printer states.
     ///
     /// The first printer in the list becomes the active printer.
-    /// Panics if the printers vector is empty.
-    pub fn new_multi(printers: Vec<SharedPrinterState>) -> Self {
-        assert!(!printers.is_empty(), "At least one printer is required");
+    /// Returns an error if the printers vector is empty.
+    pub fn new_multi(
+        printers: Vec<SharedPrinterState>,
+        notifications: NotificationConfig,
+    ) -> Result<Self> {
+        if printers.is_empty() {
+            bail!("At least one printer is required");
+        }
 
         let printer_count = printers.len();
-        let printer_state = Arc::clone(&printers[0]);
         let printer_connections = vec![false; printer_count];
         let printer_last_updates = vec![None; printer_count];
         let printer_error_messages = vec![None; printer_count];
@@ -172,7 +164,7 @@ impl App {
         // Take initial snapshots of all printers
         let cached_snapshots: Vec<PrinterState> = printers
             .iter()
-            .map(|p| p.lock().expect("state lock poisoned").clone())
+            .map(|p| p.lock().unwrap_or_else(|e| e.into_inner()).clone())
             .collect();
 
         // Use aggregate view when multiple printers, single view otherwise
@@ -182,17 +174,13 @@ impl App {
             ViewMode::Single
         };
 
-        Self {
-            printer_state,
-            connected: false,
+        Ok(Self {
             printers,
             printer_connections,
             connected_count: 0,
             printer_last_updates,
             printer_error_messages,
             active_printer_index: 0,
-            last_update: None,
-            error_message: None,
             should_quit: false,
             controls_locked: true,
             use_celsius: true,
@@ -204,7 +192,8 @@ impl App {
             view_mode,
             cached_snapshots,
             snapshot_dirty: vec![true; printer_count],
-        }
+            notifications,
+        })
     }
 
     // ========================================================================
@@ -246,12 +235,6 @@ impl App {
     pub fn set_active_printer(&mut self, index: usize) -> bool {
         if index < self.printers.len() {
             self.active_printer_index = index;
-            // Update legacy fields to point to the new active printer
-            self.printer_state = Arc::clone(&self.printers[index]);
-            self.connected = self.printer_connections[index];
-            self.last_update = self.printer_last_updates[index];
-            self.error_message
-                .clone_from(&self.printer_error_messages[index]);
             true
         } else {
             false
@@ -264,37 +247,24 @@ impl App {
     /// - Increments when changing from disconnected to connected
     /// - Decrements when changing from connected to disconnected
     /// - No change if the state is already the target value
-    ///
-    /// Also updates the legacy `connected` field if this is the active printer.
     pub fn set_printer_connected(&mut self, index: usize, connected: bool) {
         if let Some(conn) = self.printer_connections.get_mut(index) {
             let was_connected = *conn;
             if was_connected != connected {
                 *conn = connected;
-                // Update cached count based on state transition
                 if connected {
                     self.connected_count += 1;
                 } else {
                     self.connected_count = self.connected_count.saturating_sub(1);
                 }
             }
-            // Update legacy field if this is the active printer
-            if index == self.active_printer_index {
-                self.connected = connected;
-            }
         }
     }
 
     /// Updates the last update timestamp for a specific printer.
-    ///
-    /// Also updates the legacy `last_update` field if this is the active printer.
     pub fn set_printer_last_update(&mut self, index: usize, timestamp: Option<Instant>) {
         if let Some(last_update) = self.printer_last_updates.get_mut(index) {
             *last_update = timestamp;
-            // Update legacy field if this is the active printer
-            if index == self.active_printer_index {
-                self.last_update = timestamp;
-            }
         }
     }
 
@@ -313,54 +283,15 @@ impl App {
 
     /// Computes the local timezone offset in seconds from UTC.
     ///
-    /// Uses the system's `date` command to get the timezone offset.
-    /// This is computed once at startup to avoid repeated overhead.
-    /// Returns the offset where positive values are east of UTC and negative values are west.
+    /// Uses libc `localtime_r` to get the offset directly from the OS,
+    /// avoiding the overhead of spawning a subprocess.
     fn compute_timezone_offset() -> i32 {
-        use std::process::Command;
-
-        // Use the `date` command to get timezone offset in +HHMM/-HHMM format
-        // This works on macOS, Linux, and most Unix-like systems
-        if let Ok(output) = Command::new("date").arg("+%z").output() {
-            if output.status.success() {
-                if let Ok(offset_str) = std::str::from_utf8(&output.stdout) {
-                    return Self::parse_timezone_offset(offset_str.trim());
-                }
-            }
+        unsafe {
+            let now = libc::time(std::ptr::null_mut());
+            let mut tm: libc::tm = std::mem::zeroed();
+            libc::localtime_r(&now, &mut tm);
+            tm.tm_gmtoff as i32
         }
-
-        // Fallback: Use environment variable TZ parsing or assume UTC
-        if let Ok(tz) = std::env::var("TZ") {
-            // Simple parsing for common formats like "EST5EDT" or "UTC"
-            if tz.starts_with("UTC") || tz.starts_with("GMT") {
-                // Parse optional offset like "UTC-5" or "GMT+1"
-                if let Some(offset_part) = tz.get(3..) {
-                    if let Ok(hours) = offset_part.parse::<i32>() {
-                        // Note: TZ convention is opposite (EST5 means UTC-5)
-                        return -hours * SECS_PER_HOUR;
-                    }
-                }
-                return 0;
-            }
-        }
-
-        // Final fallback: assume UTC
-        0
-    }
-
-    /// Parses a timezone offset string in +HHMM or -HHMM format.
-    fn parse_timezone_offset(offset_str: &str) -> i32 {
-        if offset_str.len() >= 5 {
-            let sign = if offset_str.starts_with('-') { -1 } else { 1 };
-            // Parse "+HHMM" or "-HHMM" format
-            if let (Ok(hours), Ok(mins)) = (
-                offset_str[1..3].parse::<i32>(),
-                offset_str[3..5].parse::<i32>(),
-            ) {
-                return sign * (hours * SECS_PER_HOUR + mins * SECS_PER_MINUTE);
-            }
-        }
-        0
     }
 
     /// Returns the cached timezone offset in seconds from UTC.
@@ -392,6 +323,8 @@ impl App {
                 self.set_printer_connected(printer_index, false);
             }
             MqttEvent::StateUpdated { printer_index } => {
+                // Check for notification-worthy transitions before marking dirty
+                self.check_state_notifications(printer_index);
                 // State is updated via shared reference, just record the time
                 self.set_printer_last_update(printer_index, Some(Instant::now()));
                 self.set_printer_connected(printer_index, true);
@@ -410,48 +343,69 @@ impl App {
     }
 
     /// Sets the error message for a specific printer.
-    ///
-    /// Also updates the legacy `error_message` field if this is the active printer.
     fn set_printer_error(&mut self, index: usize, error: Option<String>) {
         if let Some(err_slot) = self.printer_error_messages.get_mut(index) {
-            if index == self.active_printer_index {
-                // Clone to legacy field first, then move into slot (avoids cloning error)
-                self.error_message = error.clone();
-            }
             *err_slot = error;
         }
     }
 
-    /// Returns the duration since the last state update, if any.
-    pub fn time_since_update(&self) -> Option<Duration> {
-        self.last_update.map(|t| t.elapsed())
+    /// Returns the shared state of the active printer.
+    pub fn active_printer_state(&self) -> &SharedPrinterState {
+        &self.printers[self.active_printer_index]
     }
 
-    /// Returns true if the connection appears stale (connected but no recent messages).
-    /// A connection is considered stale if we're marked as connected but haven't
-    /// received any messages for STALE_CONNECTION_THRESHOLD duration.
+    /// Returns the error message for the active printer, if any.
+    pub fn active_error_message(&self) -> Option<&str> {
+        self.printer_error_messages
+            .get(self.active_printer_index)
+            .and_then(|e| e.as_deref())
+    }
+
+    /// Returns the duration since the last state update for the active printer.
+    pub fn time_since_update(&self) -> Option<Duration> {
+        self.printer_last_updates
+            .get(self.active_printer_index)
+            .copied()
+            .flatten()
+            .map(|t| t.elapsed())
+    }
+
+    /// Returns true if the active connection appears stale.
     #[cfg(test)]
     pub fn is_connection_stale(&self) -> bool {
-        if !self.connected {
+        let connected = self
+            .printer_connections
+            .get(self.active_printer_index)
+            .copied()
+            .unwrap_or(false);
+        if !connected {
             return false;
         }
-        match self.last_update {
+        match self
+            .printer_last_updates
+            .get(self.active_printer_index)
+            .copied()
+            .flatten()
+        {
             Some(t) => t.elapsed() > STALE_CONNECTION_THRESHOLD,
-            None => true, // Connected but never received data
+            None => true,
         }
     }
 
     /// Returns a human-readable status text based on connection and print state.
-    ///
-    /// Maps the printer's gcode_state to user-friendly labels.
-    /// All return values are static strings, so the mutex lock is safely released
-    /// before the return value is used.
     pub fn status_text(&self) -> &'static str {
-        if !self.connected {
+        let connected = self
+            .printer_connections
+            .get(self.active_printer_index)
+            .copied()
+            .unwrap_or(false);
+        if !connected {
             return "Disconnected";
         }
 
-        let state = self.printer_state.lock().expect("state lock poisoned");
+        let state = self.printers[self.active_printer_index]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         crate::ui::common::gcode_state_to_status(state.print_status.gcode_state)
     }
 
@@ -470,7 +424,9 @@ impl App {
         for (i, dirty) in self.snapshot_dirty.iter_mut().enumerate() {
             if *dirty {
                 if let Some(printer) = self.printers.get(i) {
-                    self.cached_snapshots[i] = printer.lock().expect("state lock poisoned").clone();
+                    if let Some(snapshot) = self.cached_snapshots.get_mut(i) {
+                        *snapshot = printer.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    }
                 }
                 *dirty = false;
             }
@@ -516,6 +472,104 @@ impl App {
     pub fn expire_toasts(&mut self) {
         self.toasts
             .retain(|toast| toast.created_at.elapsed() < TOAST_DURATION);
+    }
+
+    /// Checks for state transitions that should trigger notifications.
+    ///
+    /// Compares the cached snapshot (previous state) with the current shared state
+    /// to detect GcodeState transitions and new HMS errors. Must be called BEFORE
+    /// marking the snapshot dirty so the cached snapshot still holds the old state.
+    fn check_state_notifications(&mut self, printer_index: usize) {
+        // Extract old state (cheap copies only, no heap allocation)
+        let (old_gcode, old_hms_received) = match self.cached_snapshots.get(printer_index) {
+            Some(s) => (s.print_status.gcode_state, s.hms_received),
+            None => return,
+        };
+
+        // Early exit: nothing to detect on initial connection with no HMS data
+        if old_gcode == GcodeState::Unknown && !old_hms_received {
+            return;
+        }
+
+        let shared = match self.printers.get(printer_index) {
+            Some(p) => p,
+            None => return,
+        };
+        let state = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let new_gcode = state.print_status.gcode_state;
+
+        // Detect transitions
+        let is_completion = old_gcode != GcodeState::Unknown
+            && new_gcode == GcodeState::Finish
+            && old_gcode != GcodeState::Finish;
+        let is_failure = old_gcode != GcodeState::Unknown
+            && new_gcode == GcodeState::Failed
+            && old_gcode != GcodeState::Failed;
+
+        // Find new HMS error messages (only allocate when there are actually new codes)
+        let new_hms_messages: Vec<String> = if old_hms_received {
+            let old_codes: HashSet<u32> = self.cached_snapshots[printer_index]
+                .hms_errors
+                .iter()
+                .map(|e| e.code)
+                .collect();
+            state
+                .hms_errors
+                .iter()
+                .filter(|e| !old_codes.contains(&e.code))
+                .map(|e| e.message.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Early exit if no notifications needed (avoids name/failure string allocs)
+        if !is_completion && !is_failure && new_hms_messages.is_empty() {
+            return;
+        }
+
+        // Allocate strings only when we know a notification will fire
+        let printer_name = if state.printer_name.is_empty() {
+            format!("Printer {}", printer_index + 1)
+        } else {
+            state.printer_name.clone()
+        };
+        let failure_desc = if is_failure {
+            state
+                .print_status
+                .failure_description()
+                .map(|c| c.into_owned())
+        } else {
+            None
+        };
+        drop(state);
+
+        if is_completion {
+            let msg = format!("{printer_name}: Print complete!");
+            self.add_toast(&msg, ToastSeverity::Success);
+            if self.notifications.completions {
+                crate::notifications::send("Print Complete", &msg);
+            }
+        }
+
+        if is_failure {
+            let msg = match &failure_desc {
+                Some(desc) => format!("{printer_name}: Print failed — {desc}"),
+                None => format!("{printer_name}: Print failed"),
+            };
+            self.add_toast(&msg, ToastSeverity::Error);
+            if self.notifications.errors {
+                crate::notifications::send("Print Failed", &msg);
+            }
+        }
+
+        for message in &new_hms_messages {
+            let msg = format!("{printer_name}: {message}");
+            self.add_toast(&msg, ToastSeverity::Warning);
+            if self.notifications.errors {
+                crate::notifications::send("HMS Alert", &msg);
+            }
+        }
     }
 }
 
@@ -564,48 +618,444 @@ mod tests {
         #[test]
         fn returns_false_when_disconnected() {
             let app = create_test_app();
-            // App starts disconnected
             assert!(!app.is_connection_stale());
         }
 
         #[test]
         fn returns_true_when_connected_but_never_received_data() {
             let mut app = create_test_app();
-            app.connected = true;
-            app.last_update = None;
+            app.set_printer_connected(0, true);
             assert!(app.is_connection_stale());
         }
 
         #[test]
         fn returns_false_when_connected_with_recent_update() {
             let mut app = create_test_app();
-            app.connected = true;
-            app.last_update = Some(Instant::now());
+            app.set_printer_connected(0, true);
+            app.set_printer_last_update(0, Some(Instant::now()));
             assert!(!app.is_connection_stale());
         }
 
         #[test]
         fn returns_true_when_connected_with_old_update() {
             let mut app = create_test_app();
-            app.connected = true;
-            // Set last_update to a time older than the threshold
-            app.last_update =
-                Some(Instant::now() - STALE_CONNECTION_THRESHOLD - Duration::from_secs(1));
+            app.set_printer_connected(0, true);
+            app.set_printer_last_update(
+                0,
+                Some(Instant::now() - STALE_CONNECTION_THRESHOLD - Duration::from_secs(1)),
+            );
             assert!(app.is_connection_stale());
         }
 
         #[test]
-        fn returns_false_when_update_exactly_at_threshold() {
+        fn returns_false_when_update_near_threshold() {
             let mut app = create_test_app();
-            app.connected = true;
-            // Set last_update to exactly the threshold (not stale yet)
-            app.last_update = Some(Instant::now() - STALE_CONNECTION_THRESHOLD);
-            // Since we check elapsed() > threshold (not >=), this should not be stale
-            // However, due to timing, a tiny amount of time may have passed
-            // So we test with a small buffer
-            app.last_update =
-                Some(Instant::now() - STALE_CONNECTION_THRESHOLD + Duration::from_millis(100));
+            app.set_printer_connected(0, true);
+            app.set_printer_last_update(
+                0,
+                Some(Instant::now() - STALE_CONNECTION_THRESHOLD + Duration::from_millis(100)),
+            );
             assert!(!app.is_connection_stale());
+        }
+    }
+
+    mod notification_tests {
+        use super::*;
+        use crate::printer::HmsError;
+        use std::borrow::Cow;
+
+        fn make_hms_error(code: u32, message: &'static str) -> HmsError {
+            HmsError {
+                code,
+                module: 0,
+                severity: 0,
+                message: Cow::Borrowed(message),
+                received_at: Instant::now(),
+            }
+        }
+
+        fn app_with_running_print() -> App {
+            let mut app = create_test_app();
+            app.cached_snapshots[0].print_status.gcode_state = GcodeState::Running;
+            app
+        }
+
+        #[test]
+        fn print_completion_generates_success_toast() {
+            let mut app = app_with_running_print();
+            app.printers[0]
+                .lock()
+                .expect("lock")
+                .print_status
+                .gcode_state = GcodeState::Finish;
+            app.check_state_notifications(0);
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Success);
+            assert!(app.toasts[0].message.contains("Print complete"));
+        }
+
+        #[test]
+        fn print_failure_generates_error_toast() {
+            let mut app = app_with_running_print();
+            app.printers[0]
+                .lock()
+                .expect("lock")
+                .print_status
+                .gcode_state = GcodeState::Failed;
+            app.check_state_notifications(0);
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Error);
+            assert!(app.toasts[0].message.contains("Print failed"));
+        }
+
+        #[test]
+        fn no_toast_on_initial_connection() {
+            let mut app = create_test_app();
+            app.printers[0]
+                .lock()
+                .expect("lock")
+                .print_status
+                .gcode_state = GcodeState::Finish;
+            app.check_state_notifications(0);
+            assert!(app.toasts.is_empty());
+        }
+
+        #[test]
+        fn new_hms_error_generates_warning_toast() {
+            let mut app = create_test_app();
+            app.cached_snapshots[0].hms_received = true;
+            app.printers[0].lock().expect("lock").hms_errors =
+                vec![make_hms_error(0x0500_0200, "Filament may be tangled")];
+            app.check_state_notifications(0);
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Warning);
+            assert!(app.toasts[0].message.contains("Filament may be tangled"));
+        }
+
+        #[test]
+        fn existing_hms_error_does_not_re_notify() {
+            let mut app = create_test_app();
+            let error = make_hms_error(0x0500_0200, "Filament may be tangled");
+            app.cached_snapshots[0].hms_received = true;
+            app.cached_snapshots[0].hms_errors = vec![error.clone()];
+            app.printers[0].lock().expect("lock").hms_errors = vec![error];
+            app.check_state_notifications(0);
+            assert!(app.toasts.is_empty());
+        }
+
+        #[test]
+        fn no_hms_toast_before_first_hms_report() {
+            let mut app = create_test_app();
+            app.printers[0].lock().expect("lock").hms_errors =
+                vec![make_hms_error(0x0700_0100, "AMS warning")];
+            app.check_state_notifications(0);
+            assert!(app.toasts.is_empty());
+        }
+    }
+
+    mod toast_queue_tests {
+        use super::*;
+
+        #[test]
+        fn toast_overflow_removes_oldest() {
+            let mut app = create_test_app();
+            app.add_toast("first", ToastSeverity::Info);
+            app.add_toast("second", ToastSeverity::Warning);
+            app.add_toast("third", ToastSeverity::Success);
+            app.add_toast("fourth", ToastSeverity::Error);
+
+            assert_eq!(app.toasts.len(), MAX_TOASTS);
+            assert_eq!(app.toasts[0].message, "second");
+            assert_eq!(app.toasts[1].message, "third");
+            assert_eq!(app.toasts[2].message, "fourth");
+        }
+
+        #[test]
+        fn toast_overflow_preserves_severity() {
+            let mut app = create_test_app();
+            app.add_toast("a", ToastSeverity::Info);
+            app.add_toast("b", ToastSeverity::Warning);
+            app.add_toast("c", ToastSeverity::Success);
+            app.add_toast("d", ToastSeverity::Error);
+
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Warning);
+            assert_eq!(app.toasts[1].severity, ToastSeverity::Success);
+            assert_eq!(app.toasts[2].severity, ToastSeverity::Error);
+        }
+
+        #[test]
+        fn toast_overflow_with_many_additions() {
+            let mut app = create_test_app();
+            for i in 0..10 {
+                app.add_toast(format!("msg-{i}"), ToastSeverity::Info);
+            }
+            assert_eq!(app.toasts.len(), MAX_TOASTS);
+            assert_eq!(app.toasts[0].message, "msg-7");
+            assert_eq!(app.toasts[1].message, "msg-8");
+            assert_eq!(app.toasts[2].message, "msg-9");
+        }
+
+        #[test]
+        fn convenience_methods_set_correct_severity() {
+            let mut app = create_test_app();
+            app.toast_info("info");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Info);
+
+            app.toasts.clear();
+            app.toast_success("success");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Success);
+
+            app.toasts.clear();
+            app.toast_warning("warning");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Warning);
+
+            app.toasts.clear();
+            app.toast_error("error");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Error);
+        }
+    }
+
+    mod toast_expiration_tests {
+        use super::*;
+
+        #[test]
+        fn fresh_toasts_are_not_expired() {
+            let mut app = create_test_app();
+            app.add_toast("recent", ToastSeverity::Info);
+            app.expire_toasts();
+            assert_eq!(app.toasts.len(), 1);
+        }
+
+        #[test]
+        fn old_toasts_are_expired() {
+            let mut app = create_test_app();
+            app.toasts.push_back(Toast {
+                message: "old".into(),
+                severity: ToastSeverity::Info,
+                created_at: Instant::now() - TOAST_DURATION - Duration::from_millis(1),
+            });
+            app.expire_toasts();
+            assert!(app.toasts.is_empty());
+        }
+
+        #[test]
+        fn mixed_age_toasts_partial_expiry() {
+            let mut app = create_test_app();
+            app.toasts.push_back(Toast {
+                message: "old".into(),
+                severity: ToastSeverity::Warning,
+                created_at: Instant::now() - TOAST_DURATION - Duration::from_secs(1),
+            });
+            app.add_toast("new", ToastSeverity::Success);
+            assert_eq!(app.toasts.len(), 2);
+
+            app.expire_toasts();
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].message, "new");
+        }
+
+        #[test]
+        fn expire_all_when_all_old() {
+            let mut app = create_test_app();
+            let old_time = Instant::now() - TOAST_DURATION - Duration::from_secs(10);
+            for i in 0..MAX_TOASTS {
+                app.toasts.push_back(Toast {
+                    message: format!("old-{i}"),
+                    severity: ToastSeverity::Info,
+                    created_at: old_time,
+                });
+            }
+            app.expire_toasts();
+            assert!(app.toasts.is_empty());
+        }
+    }
+
+    mod connected_count_tests {
+        use super::*;
+
+        #[test]
+        fn initial_connected_count_is_zero() {
+            let app = create_test_app();
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn connect_increments_count() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn disconnect_decrements_count() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+            app.set_printer_connected(0, false);
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn double_connect_does_not_double_count() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+            app.set_printer_connected(0, true);
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn double_disconnect_does_not_underflow() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, false);
+            app.set_printer_connected(0, false);
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn out_of_bounds_index_is_ignored() {
+            let mut app = create_test_app();
+            app.set_printer_connected(99, true);
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn multi_printer_connected_count() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let p3 = Arc::new(Mutex::new(PrinterState::default()));
+            let mut app =
+                App::new_multi(vec![p1, p2, p3], NotificationConfig::default()).expect("new_multi");
+
+            app.set_printer_connected(0, true);
+            app.set_printer_connected(2, true);
+            assert_eq!(app.get_connected_count(), 2);
+
+            app.set_printer_connected(1, true);
+            assert_eq!(app.get_connected_count(), 3);
+
+            app.set_printer_connected(0, false);
+            assert_eq!(app.get_connected_count(), 2);
+        }
+    }
+
+    mod handle_mqtt_event_tests {
+        use super::*;
+
+        #[test]
+        fn connected_event_sets_connected_and_clears_error() {
+            let mut app = create_test_app();
+            app.set_printer_error(0, Some("old error".into()));
+
+            app.handle_mqtt_event(MqttEvent::Connected { printer_index: 0 });
+
+            assert!(app.is_printer_connected(0));
+            assert!(app.active_error_message().is_none());
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn disconnected_event_clears_connected() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+
+            app.handle_mqtt_event(MqttEvent::Disconnected { printer_index: 0 });
+
+            assert!(!app.is_printer_connected(0));
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn state_updated_event_records_time_and_marks_connected() {
+            let mut app = create_test_app();
+
+            app.handle_mqtt_event(MqttEvent::StateUpdated { printer_index: 0 });
+
+            assert!(app.is_printer_connected(0));
+            assert!(app.get_printer_last_update(0).is_some());
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn error_event_stores_message() {
+            let mut app = create_test_app();
+
+            app.handle_mqtt_event(MqttEvent::Error {
+                printer_index: 0,
+                message: "connection refused".into(),
+            });
+
+            assert_eq!(app.active_error_message(), Some("connection refused"));
+        }
+
+        #[test]
+        fn connected_then_error_then_connected_clears_error() {
+            let mut app = create_test_app();
+
+            app.handle_mqtt_event(MqttEvent::Connected { printer_index: 0 });
+            app.handle_mqtt_event(MqttEvent::Error {
+                printer_index: 0,
+                message: "timeout".into(),
+            });
+            assert_eq!(app.active_error_message(), Some("timeout"));
+
+            app.handle_mqtt_event(MqttEvent::Connected { printer_index: 0 });
+            assert!(app.active_error_message().is_none());
+        }
+    }
+
+    mod multi_printer_tests {
+        use super::*;
+
+        #[test]
+        fn new_multi_requires_at_least_one_printer() {
+            let result = App::new_multi(vec![], NotificationConfig::default());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn new_multi_single_printer_uses_single_view() {
+            let p = Arc::new(Mutex::new(PrinterState::default()));
+            let app = App::new_multi(vec![p], NotificationConfig::default()).expect("new_multi");
+            assert_eq!(app.view_mode, ViewMode::Single);
+        }
+
+        #[test]
+        fn new_multi_multiple_printers_uses_aggregate_view() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let app =
+                App::new_multi(vec![p1, p2], NotificationConfig::default()).expect("new_multi");
+            assert_eq!(app.view_mode, ViewMode::Aggregate);
+        }
+
+        #[test]
+        fn set_active_printer_within_bounds() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let mut app =
+                App::new_multi(vec![p1, p2], NotificationConfig::default()).expect("new_multi");
+
+            assert!(app.set_active_printer(1));
+            assert_eq!(app.active_printer_index(), 1);
+        }
+
+        #[test]
+        fn set_active_printer_out_of_bounds_returns_false() {
+            let p = Arc::new(Mutex::new(PrinterState::default()));
+            let mut app =
+                App::new_multi(vec![p], NotificationConfig::default()).expect("new_multi");
+
+            assert!(!app.set_active_printer(5));
+            assert_eq!(app.active_printer_index(), 0);
+        }
+
+        #[test]
+        fn printer_count_returns_correct_value() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let p3 = Arc::new(Mutex::new(PrinterState::default()));
+            let app =
+                App::new_multi(vec![p1, p2, p3], NotificationConfig::default()).expect("new_multi");
+            assert_eq!(app.printer_count(), 3);
         }
     }
 }
