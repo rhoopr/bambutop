@@ -34,15 +34,21 @@ pub(crate) const STALE_WARNING_SECS: u64 = 10;
 /// Seconds before data is considered critically stale (red warning)
 pub(crate) const STALE_CRITICAL_SECS: u64 = 30;
 
-/// Minimum header panel height (borders + 3 lines of content)
-const MIN_HEADER_HEIGHT: u16 = 5;
+/// Minimum header panel height (borders + 2 lines of content)
+const MIN_HEADER_HEIGHT: u16 = 4;
 /// Border overhead for the header panel (top + bottom)
 const HEADER_BORDER_HEIGHT: u16 = 2;
 
-/// Calculates the header panel height based on the number of HMS errors.
+/// Calculates the header panel height based on content needs.
 fn header_height(printer_state: &PrinterState) -> u16 {
     let error_count = printer_state.hms_errors.len() as u16;
-    (HEADER_BORDER_HEIGHT + error_count).max(MIN_HEADER_HEIGHT)
+    let has_indicators = printer_state.has_xcam() || printer_state.has_ipcam();
+    // Right column: WiFi + optional indicators + FW = 2 or 3 lines
+    let right_lines = if has_indicators { 3 } else { 2 };
+    // Left column: error count or 1 status line
+    let left_lines = error_count.max(1);
+    let content_lines = left_lines.max(right_lines);
+    (HEADER_BORDER_HEIGHT + content_lines).max(MIN_HEADER_HEIGHT)
 }
 
 /// Renders the main application UI.

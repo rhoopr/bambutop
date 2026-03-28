@@ -31,19 +31,11 @@ const HMS_SEVERITY_WARNING: u8 = 1;
 /// HMS severity level considered a serious error (light red)
 const HMS_SEVERITY_ERROR: u8 = 2;
 
-/// Renders the header panel with printer status and system info boxes.
+/// Renders the header panel as a single unified box.
+///
+/// Title shows "Printer Name — Status". Content has HMS/errors on the left
+/// and WiFi, monitoring indicators, and firmware on the right.
 pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
-    // Split into two boxes side by side
-    let boxes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(20), Constraint::Min(1)])
-        .split(area);
-
-    render_status_box(frame, app, printer_state, boxes[0]);
-    render_system_box(frame, app, printer_state, boxes[1]);
-}
-
-fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
     let status = app.status_text();
     let status_color = match status {
         "Printing" => Color::Green,
@@ -53,31 +45,23 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         _ => Color::White,
     };
 
-    // Format printer title: config name > "P1S ...0428" > "Bambu Printer"
-    let title = if !printer_state.printer_name.is_empty() {
-        // Use config name
-        format!(" {} ", printer_state.printer_name)
+    let border_color = status_color;
+
+    // Build title: "Printer Name — Status"
+    let printer_name = if !printer_state.printer_name.is_empty() {
+        Cow::Borrowed(printer_state.printer_name.as_str())
     } else {
-        // Use "P1S ...0428" format or fallback
         let model = if printer_state.printer_model.is_empty() {
             "Bambu Printer"
         } else {
             &printer_state.printer_model
         };
         let serial_suffix = extract_serial_suffix(&printer_state.serial_suffix);
-        let compact_title = format_compact_title(model, serial_suffix);
-        format!(" {compact_title} ")
+        format_compact_title(model, serial_suffix)
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(status_color))
-        .title(Span::styled(title, Style::new().fg(status_color)));
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let status_line = Line::from(vec![
-        Span::raw(" "),
+    let title = Line::from(vec![
+        Span::styled(format!(" {printer_name} "), Style::new().fg(border_color)),
         Span::styled(
             format!(" {status} "),
             Style::new()
@@ -87,47 +71,29 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         ),
     ]);
 
-    let mut lines = vec![status_line];
-
-    // Show failure reason when print has failed
-    if let Some(failure) = printer_state.print_status.failure_description() {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(failure.into_owned(), Style::new().fg(Color::Red)),
-        ]));
-    }
-
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
-    let has_errors = !printer_state.hms_errors.is_empty() || app.active_error_message().is_some();
-
-    let border_color = if has_errors { Color::Red } else { Color::Green };
-    let title = if has_errors {
-        " HMS Errors "
-    } else {
-        " HMS Status "
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(border_color))
-        .title(Span::styled(title, Style::new().fg(border_color)));
+        .title(title);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split inner area: left for status, right for WiFi
+    // Split inner: left for HMS/status, right for system info
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(28)])
         .split(inner);
 
-    // Left side: status messages (pre-allocate for typical case)
+    // Left side: failure reason, HMS errors, or status
     let mut lines: Vec<Line> = Vec::with_capacity(4);
 
-    if let Some(err) = app.active_error_message() {
+    if let Some(failure) = printer_state.print_status.failure_description() {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(failure.into_owned(), Style::new().fg(Color::Red)),
+        ]));
+    } else if let Some(err) = app.active_error_message() {
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(err, Style::new().fg(Color::Red)),
@@ -158,13 +124,11 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
             ]));
         }
     } else if !printer_state.hms_received {
-        // No HMS data received yet - show placeholder
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled("--", Style::new().fg(Color::DarkGray)),
         ]));
     } else {
-        // HMS data received with no errors
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled("All systems normal", Style::new().fg(Color::Green)),
@@ -173,7 +137,7 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 
     frame.render_widget(Paragraph::new(lines), cols[0]);
 
-    // Right side: System info (WiFi, indicators, firmware)
+    // Right side: WiFi, monitoring indicators, firmware
     let mut info_lines: Vec<Line> = Vec::with_capacity(4);
 
     // Line 1: WiFi signal
@@ -234,14 +198,6 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 }
 
 /// Renders WiFi signal with visual bars and color coding.
-///
-/// Signal strength thresholds:
-/// - Strong: > -50dBm (green)
-/// - Medium: -50 to -70dBm (yellow)
-/// - Weak: < -70dBm (red)
-///
-/// Uses a lifetime parameter to borrow the wifi_signal string directly,
-/// avoiding allocation on every render frame.
 fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
     /// Visual bars for strong WiFi signal
     const BARS_STRONG: &str = "\u{2582}\u{2584}\u{2586}\u{2588}";
@@ -258,10 +214,8 @@ fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
         ];
     }
 
-    // Parse dBm value from string without allocation
     let dbm = parse_dbm(wifi_signal).unwrap_or(WIFI_DEFAULT_DBM);
 
-    // Determine signal strength and color
     let (color, bars) = if dbm > WIFI_STRONG_THRESHOLD {
         (Color::Green, BARS_STRONG)
     } else if dbm > WIFI_MEDIUM_THRESHOLD {
@@ -280,9 +234,6 @@ fn render_wifi_signal<'a>(wifi_signal: &'a str) -> Vec<Span<'a>> {
 }
 
 /// Formats a relative time string from an Instant.
-///
-/// Returns human-readable strings like "2m ago", "1h ago", "3d ago".
-/// For times under 60 seconds, returns "just now".
 fn format_relative_time(instant: Instant) -> Cow<'static, str> {
     let elapsed = instant.elapsed();
     let secs = elapsed.as_secs();
