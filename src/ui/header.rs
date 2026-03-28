@@ -128,6 +128,11 @@ pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: 
             Span::raw(" "),
             Span::styled("--", Style::new().fg(Color::DarkGray)),
         ]));
+    } else if printer_state.print_status.gcode_state == crate::printer::GcodeState::Failed {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Print failed", Style::new().fg(Color::Red)),
+        ]));
     } else {
         lines.push(Line::from(vec![
             Span::raw(" "),
