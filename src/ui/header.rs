@@ -87,27 +87,6 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
         ),
     ]);
 
-    // Camera/monitoring indicators below status
-    let ai_on = printer_state.has_xcam() && printer_state.xcam.spaghetti_detector;
-    let rec_on = printer_state.has_ipcam() && printer_state.ipcam.recording;
-    let tl_on = printer_state.has_ipcam() && printer_state.ipcam.timelapse;
-    let dot = |on: bool| -> Span {
-        let color = if on { Color::Green } else { Color::DarkGray };
-        Span::styled("●", Style::new().fg(color))
-    };
-    let label = Style::new().fg(Color::DarkGray);
-    let cam_spans: Vec<Span> = vec![
-        Span::raw(" "),
-        Span::styled("AI", label),
-        dot(ai_on),
-        Span::raw(" "),
-        Span::styled("REC", label),
-        dot(rec_on),
-        Span::raw(" "),
-        Span::styled("TL", label),
-        dot(tl_on),
-    ];
-
     let mut lines = vec![status_line];
 
     // Show failure reason when print has failed
@@ -116,15 +95,13 @@ fn render_status_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
             Span::raw(" "),
             Span::styled(failure.into_owned(), Style::new().fg(Color::Red)),
         ]));
-    } else if cam_spans.len() > 1 {
-        lines.push(Line::from(cam_spans));
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: Rect) {
-    let has_errors = !printer_state.hms_errors.is_empty() || app.error_message.is_some();
+    let has_errors = !printer_state.hms_errors.is_empty() || app.active_error_message().is_some();
 
     let border_color = if has_errors { Color::Red } else { Color::Green };
     let title = if has_errors {
@@ -150,10 +127,10 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
     // Left side: status messages (pre-allocate for typical case)
     let mut lines: Vec<Line> = Vec::with_capacity(4);
 
-    if let Some(err) = &app.error_message {
+    if let Some(err) = app.active_error_message() {
         lines.push(Line::from(vec![
             Span::raw(" "),
-            Span::styled(err.as_str(), Style::new().fg(Color::Red)),
+            Span::styled(err, Style::new().fg(Color::Red)),
         ]));
     } else if !printer_state.hms_errors.is_empty() {
         for error in &printer_state.hms_errors {
@@ -196,25 +173,58 @@ fn render_system_box(frame: &mut Frame, app: &App, printer_state: &PrinterState,
 
     frame.render_widget(Paragraph::new(lines), cols[0]);
 
-    // Right side: System info (WiFi, firmware, nozzle, camera)
-    let mut info_lines: Vec<Line> = Vec::with_capacity(3);
+    // Right side: System info (WiFi, indicators, firmware)
+    let mut info_lines: Vec<Line> = Vec::with_capacity(4);
 
     // Line 1: WiFi signal
     let wifi_spans = render_wifi_signal(&printer_state.wifi_signal);
     info_lines.push(Line::from(wifi_spans));
 
-    // Line 2: Firmware + camera/monitoring indicators
-    let mut info_spans: Vec<Span> = Vec::with_capacity(10);
-    if !printer_state.firmware_version.is_empty() {
-        info_spans.push(Span::styled("FW: ", Style::new().fg(Color::DarkGray)));
-        info_spans.push(Span::styled(
-            printer_state.firmware_version.as_str(),
-            Style::new().fg(Color::DarkGray),
-        ));
+    // Line 2: Monitoring indicators (AI, FLI, REC, TL)
+    let has_indicators = printer_state.has_xcam() || printer_state.has_ipcam();
+    if has_indicators {
+        let dot = |on: bool, halt: bool| -> Span<'static> {
+            let color = if !on {
+                Color::DarkGray
+            } else if halt {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            Span::styled("●", Style::new().fg(color))
+        };
+        let label = Style::new().fg(Color::DarkGray);
+        let halt = printer_state.xcam.print_halt;
+        let mut ind_spans: Vec<Span> = Vec::with_capacity(12);
+        if printer_state.has_xcam() {
+            ind_spans.push(Span::styled("AI", label));
+            ind_spans.push(dot(printer_state.xcam.spaghetti_detector, halt));
+            ind_spans.push(Span::raw(" "));
+            ind_spans.push(Span::styled("FLI", label));
+            ind_spans.push(dot(printer_state.xcam.first_layer_inspector, halt));
+            ind_spans.push(Span::raw(" "));
+        }
+        if printer_state.has_ipcam() {
+            ind_spans.push(Span::styled("REC", label));
+            ind_spans.push(dot(printer_state.ipcam.recording, false));
+            ind_spans.push(Span::raw(" "));
+            ind_spans.push(Span::styled("TL", label));
+            ind_spans.push(dot(printer_state.ipcam.timelapse, false));
+            ind_spans.push(Span::raw(" "));
+        }
+        info_lines.push(Line::from(ind_spans));
     }
-    if !info_spans.is_empty() {
-        info_spans.push(Span::raw(" "));
-        info_lines.push(Line::from(info_spans));
+
+    // Line 3: Firmware version
+    if !printer_state.firmware_version.is_empty() {
+        info_lines.push(Line::from(vec![
+            Span::styled("FW: ", Style::new().fg(Color::DarkGray)),
+            Span::styled(
+                printer_state.firmware_version.as_str(),
+                Style::new().fg(Color::DarkGray),
+            ),
+            Span::raw(" "),
+        ]));
     }
 
     frame.render_widget(

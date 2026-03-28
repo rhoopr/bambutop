@@ -94,12 +94,24 @@ const INDICATORS: &[Indicator] = &[
         description: "Spaghetti detection",
     },
     Indicator {
+        label: "FLI",
+        description: "First layer inspection",
+    },
+    Indicator {
         label: "REC",
         description: "Camera recording",
     },
     Indicator {
         label: "TL",
         description: "Timelapse enabled",
+    },
+    Indicator {
+        label: "\u{25CF} green",
+        description: "Detect only",
+    },
+    Indicator {
+        label: "\u{25CF} yellow",
+        description: "Detect + halt print",
     },
 ];
 

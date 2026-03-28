@@ -3,7 +3,7 @@
 //! Displays the current print job name, progress percentage, layer count,
 //! time remaining, and a visual progress bar.
 
-use crate::printer::PrinterState;
+use crate::printer::{GcodeState, PrinterState};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -29,6 +29,14 @@ pub fn render(
     timezone_offset_secs: i32,
     area: Rect,
 ) {
+    // Firmware upgrade takeover: replace entire panel during active upgrade
+    if let Some(upgrade) = &printer_state.upgrade_state {
+        if upgrade.is_active() {
+            render_upgrade_progress(frame, upgrade, area);
+            return;
+        }
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -47,7 +55,6 @@ pub fn render(
             Constraint::Length(1), // Phase (or spacer if no phase)
             Constraint::Length(1), // Progress/Layer/Remaining
             Constraint::Length(1), // Progress bar
-            Constraint::Length(1), // Spacer
         ])
         .split(inner);
 
@@ -79,94 +86,202 @@ pub fn render(
     let file_line = Line::from(file_spans);
     frame.render_widget(Paragraph::new(file_line), chunks[0]);
 
-    // Print phase (only shown when job is active)
+    // Print phase — augmented with filament change info when applicable
     if let Some(phase) = print_status.print_phase(&printer_state.temperatures) {
+        let phase_display: Cow<'_, str> = if phase == "Changing Filament" {
+            if let Some(desc) = printer_state
+                .ams
+                .as_ref()
+                .and_then(|a| a.filament_change_description())
+            {
+                Cow::Owned(format!("Changing Filament: {desc}"))
+            } else {
+                Cow::Borrowed(phase)
+            }
+        } else {
+            Cow::Borrowed(phase)
+        };
         let phase_line = Line::from(vec![
             Span::raw(" "),
             Span::styled("Phase: ", Style::new().fg(Color::DarkGray)),
-            Span::styled(phase, Style::new().fg(Color::Gray)),
+            Span::styled(phase_display, Style::new().fg(Color::Gray)),
         ]);
         frame.render_widget(Paragraph::new(phase_line), chunks[1]);
     }
 
-    // Progress, Layer and time remaining
-    let time_remaining = format_time(print_status.remaining_time_mins);
-    let eta_clock = format_eta_clock(print_status.remaining_time_mins, timezone_offset_secs);
+    // During PREPARE state with prepare_percent: show preparation progress
+    let is_preparing =
+        print_status.gcode_state == GcodeState::Prepare && print_status.prepare_percent.is_some();
 
-    // Calculate elapsed time from gcode_start_time
-    let elapsed_display: Cow<'_, str> = printer_state
-        .gcode_start_time
-        .and_then(|start_ts| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?
-                .as_secs();
-            if now > start_ts {
-                let elapsed_mins = ((now - start_ts) / 60) as u32;
-                Some(format_time(elapsed_mins))
+    if is_preparing {
+        let percent = print_status.prepare_percent.unwrap_or(0).min(100);
+        let info_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Preparing: ", Style::new().fg(Color::DarkGray)),
+            Span::styled(format!("{percent}%"), Style::new().fg(Color::Yellow)),
+        ]);
+        frame.render_widget(Paragraph::new(info_line), chunks[2]);
+
+        let ratio = f64::from(percent) / 100.0;
+        let gauge = LineGauge::default()
+            .filled_style(Style::new().fg(Color::Yellow))
+            .unfilled_style(Style::new().fg(Color::DarkGray))
+            .ratio(ratio)
+            .label("");
+        let progress_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(chunks[3]);
+        frame.render_widget(gauge, progress_area[0]);
+    } else {
+        // Normal progress display
+        let time_remaining = format_time(print_status.remaining_time_mins);
+        let eta_clock = format_eta_clock(print_status.remaining_time_mins, timezone_offset_secs);
+
+        let elapsed_display: Cow<'_, str> = printer_state
+            .gcode_start_time
+            .and_then(|start_ts| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs();
+                if now > start_ts {
+                    let elapsed_mins = ((now - start_ts) / 60) as u32;
+                    Some(format_time(elapsed_mins))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Cow::Borrowed("--:--"));
+
+        let remaining_display: Cow<'_, str> = if print_status.remaining_time_mins == 0 {
+            time_remaining
+        } else {
+            Cow::Owned(format!("{time_remaining} (ETA {eta_clock})"))
+        };
+
+        let layer_value: Cow<'static, str> = if print_status.total_layers > 0 {
+            Cow::Owned(format!(
+                "{}/{}",
+                print_status.layer_num, print_status.total_layers
+            ))
+        } else {
+            Cow::Borrowed("-/-")
+        };
+
+        let mut info_spans: Vec<Span> = Vec::with_capacity(12);
+        info_spans.push(Span::raw(" "));
+        info_spans.push(Span::styled("Progress: ", Style::new().fg(Color::DarkGray)));
+        info_spans.push(Span::styled(
+            format!("{}%", print_status.progress),
+            Style::new().fg(Color::Cyan),
+        ));
+        info_spans.push(Span::raw("  "));
+        info_spans.push(Span::styled("Layer: ", Style::new().fg(Color::DarkGray)));
+        info_spans.push(Span::styled(layer_value, Style::new().fg(Color::Cyan)));
+        info_spans.push(Span::raw("  "));
+        info_spans.push(Span::styled("Elapsed: ", Style::new().fg(Color::DarkGray)));
+        info_spans.push(Span::styled(elapsed_display, Style::new().fg(Color::Cyan)));
+        info_spans.push(Span::raw("  "));
+        info_spans.push(Span::styled(
+            "Remaining: ",
+            Style::new().fg(Color::DarkGray),
+        ));
+        info_spans.push(Span::styled(
+            remaining_display,
+            Style::new().fg(Color::Cyan),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(info_spans)), chunks[2]);
+
+        let progress = print_status.progress as f64 / 100.0;
+        let progress_color = if progress >= 1.0 {
+            Color::Green
+        } else if progress > 0.0 {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+
+        let gauge = LineGauge::default()
+            .filled_style(Style::new().fg(progress_color))
+            .unfilled_style(Style::new().fg(Color::DarkGray))
+            .ratio(progress)
+            .label("");
+
+        let progress_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(chunks[3]);
+        frame.render_widget(gauge, progress_area[0]);
+    }
+}
+
+/// Renders the firmware upgrade progress panel (replaces print progress during upgrades).
+fn render_upgrade_progress(frame: &mut Frame, upgrade: &crate::printer::UpgradeState, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(Color::Magenta))
+        .title(Span::styled(
+            " Firmware Upgrade ",
+            Style::new().fg(Color::Magenta),
+        ));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Module
+            Constraint::Length(1), // Version
+            Constraint::Length(1), // Progress text
+            Constraint::Length(1), // Progress bar
+        ])
+        .split(inner);
+
+    // Module being upgraded
+    let module_line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("Module: ", Style::new().fg(Color::DarkGray)),
+        Span::styled(
+            if upgrade.module.is_empty() {
+                "firmware"
             } else {
-                None
-            }
-        })
-        .unwrap_or(Cow::Borrowed("--:--"));
+                &upgrade.module
+            },
+            Style::new().fg(Color::Magenta),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(module_line), chunks[0]);
 
-    // Build remaining time display with ETA clock if available
-    let remaining_display: Cow<'_, str> = if print_status.remaining_time_mins == 0 {
-        time_remaining
-    } else {
-        Cow::Owned(format!("{time_remaining} (ETA {eta_clock})"))
-    };
+    // Target version
+    if !upgrade.new_version.is_empty() {
+        let version_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Version: ", Style::new().fg(Color::DarkGray)),
+            Span::styled(&*upgrade.new_version, Style::new().fg(Color::White)),
+        ]);
+        frame.render_widget(Paragraph::new(version_line), chunks[1]);
+    }
 
-    let layer_value: Cow<'static, str> = if print_status.total_layers > 0 {
-        Cow::Owned(format!(
-            "{}/{}",
-            print_status.layer_num, print_status.total_layers
-        ))
-    } else {
-        Cow::Borrowed("-/-")
-    };
-
-    let mut info_spans: Vec<Span> = Vec::with_capacity(12);
-    info_spans.push(Span::raw(" "));
-    info_spans.push(Span::styled("Progress: ", Style::new().fg(Color::DarkGray)));
-    info_spans.push(Span::styled(
-        format!("{}%", print_status.progress),
-        Style::new().fg(Color::Cyan),
-    ));
-    info_spans.push(Span::raw("  "));
-    info_spans.push(Span::styled("Layer: ", Style::new().fg(Color::DarkGray)));
-    info_spans.push(Span::styled(layer_value, Style::new().fg(Color::Cyan)));
-    info_spans.push(Span::raw("  "));
-    info_spans.push(Span::styled("Elapsed: ", Style::new().fg(Color::DarkGray)));
-    info_spans.push(Span::styled(elapsed_display, Style::new().fg(Color::Cyan)));
-    info_spans.push(Span::raw("  "));
-    info_spans.push(Span::styled(
-        "Remaining: ",
-        Style::new().fg(Color::DarkGray),
-    ));
-    info_spans.push(Span::styled(
-        remaining_display,
-        Style::new().fg(Color::Cyan),
-    ));
-    frame.render_widget(Paragraph::new(Line::from(info_spans)), chunks[2]);
+    // Progress text
+    let progress_line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("Progress: ", Style::new().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{}%", upgrade.progress),
+            Style::new().fg(Color::Magenta),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(progress_line), chunks[2]);
 
     // Progress bar
-    let progress = print_status.progress as f64 / 100.0;
-    let progress_color = if progress >= 1.0 {
-        Color::Green
-    } else if progress > 0.0 {
-        Color::Cyan
-    } else {
-        Color::DarkGray
-    };
-
+    let ratio = f64::from(upgrade.progress.min(100)) / 100.0;
     let gauge = LineGauge::default()
-        .filled_style(Style::new().fg(progress_color))
+        .filled_style(Style::new().fg(Color::Magenta))
         .unfilled_style(Style::new().fg(Color::DarkGray))
-        .ratio(progress)
+        .ratio(ratio)
         .label("");
-
-    // Add right padding to the progress bar
     let progress_area = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(1)])

@@ -28,6 +28,9 @@ dirs = "5"
 # CLI (disable color/suggestions to reduce binary size)
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 
+# System
+libc = "0.2"
+
 # Error handling
 anyhow = "1"
 

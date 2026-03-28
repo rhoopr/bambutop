@@ -29,6 +29,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures",
+ "libc",
  "ratatui",
  "rumqttc",
  "rustls",

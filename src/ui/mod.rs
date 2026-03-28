@@ -34,8 +34,8 @@ pub(crate) const STALE_WARNING_SECS: u64 = 10;
 /// Seconds before data is considered critically stale (red warning)
 pub(crate) const STALE_CRITICAL_SECS: u64 = 30;
 
-/// Minimum header panel height (borders + 2 lines of content)
-const MIN_HEADER_HEIGHT: u16 = 4;
+/// Minimum header panel height (borders + 3 lines of content)
+const MIN_HEADER_HEIGHT: u16 = 5;
 /// Border overhead for the header panel (top + bottom)
 const HEADER_BORDER_HEIGHT: u16 = 2;
 
@@ -83,11 +83,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height(printer_state)), // Header (status + system info)
-            Constraint::Length(7), // Progress (job, spacer, info, bar, spacer)
-            Constraint::Length(temps_height), // Temps + AMS row (dynamic height)
-            Constraint::Min(1),    // Spacer (absorbs extra space)
-            Constraint::Length(4), // Controls row (right-aligned)
-            Constraint::Length(1), // Help bar
+            Constraint::Length(6),                            // Progress (job, phase, info, bar)
+            Constraint::Length(temps_height),                 // Temps + AMS row (dynamic height)
+            Constraint::Min(1),                               // Spacer (absorbs extra space)
+            Constraint::Length(4),                            // Controls row (right-aligned)
+            Constraint::Length(1),                            // Help bar
         ])
         .split(content_area);
 

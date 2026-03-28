@@ -61,23 +61,23 @@ pub fn run_setup_wizard() -> Result<Config> {
         println!("Printer added successfully!");
     }
 
-    let config = Config {
-        printer: PrinterConfig {
-            name: None,
-            ip: primary_ip,
-            serial: primary_serial,
-            access_code: primary_access_code,
-            port: crate::config::DEFAULT_MQTT_PORT,
-        },
-        extra_printers,
-    };
+    let mut printers = vec![PrinterConfig {
+        name: None,
+        ip: primary_ip,
+        serial: primary_serial,
+        access_code: primary_access_code,
+        port: crate::config::DEFAULT_MQTT_PORT,
+    }];
+    printers.extend(extra_printers);
+
+    let config = Config { printers };
 
     config.save()?;
 
     let config_path = Config::config_path()?;
     println!();
     println!("Configuration saved to: {}", config_path.display());
-    let printer_count = 1 + config.extra_printers.len();
+    let printer_count = config.printers.len();
     if printer_count > 1 {
         println!("  {printer_count} printers configured.");
     }

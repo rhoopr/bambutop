@@ -7,6 +7,7 @@
 use crate::mqtt::{MqttEvent, SharedPrinterState};
 use crate::printer::PrinterState;
 use std::collections::VecDeque;
+#[cfg(test)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,11 +20,6 @@ const STALE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(60);
 
 /// Maximum number of toasts to display at once
 const MAX_TOASTS: usize = 3;
-
-/// Seconds per hour for timezone offset calculation
-const SECS_PER_HOUR: i32 = 3600;
-/// Seconds per minute for timezone offset calculation
-const SECS_PER_MINUTE: i32 = 60;
 
 /// View mode for the UI - single printer detail or aggregate overview
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,11 +60,6 @@ pub struct Toast {
 /// Manages the connection state, printer data, and UI preferences.
 /// Supports multiple printer connections with an active printer selection.
 pub struct App {
-    /// Shared printer state (updated by MQTT task) - kept for backward compatibility
-    pub printer_state: SharedPrinterState,
-    /// Whether the MQTT connection is active - kept for backward compatibility
-    pub connected: bool,
-    // Multi-printer state management fields used by main.rs and UI rendering.
     /// All printer states for multi-printer support
     printers: Vec<SharedPrinterState>,
     /// Connection status for each printer (parallel to printers vec)
@@ -85,10 +76,6 @@ pub struct App {
     printer_error_messages: Vec<Option<String>>,
     /// Index of the currently active/selected printer
     active_printer_index: usize,
-    /// Timestamp of the last state update from the printer
-    pub last_update: Option<Instant>,
-    /// Current error message to display, if any
-    pub error_message: Option<String>,
     /// Flag to signal the application should exit
     pub should_quit: bool,
     /// Whether printer controls are locked (prevents accidental changes)
@@ -132,16 +119,12 @@ impl App {
         let printer_error_messages = vec![None];
 
         Self {
-            printer_state,
-            connected: false,
             printers,
             printer_connections,
             connected_count: 0,
             printer_last_updates,
             printer_error_messages,
             active_printer_index: 0,
-            last_update: None,
-            error_message: None,
             should_quit: false,
             controls_locked: true,
             use_celsius: true,
@@ -164,7 +147,6 @@ impl App {
         assert!(!printers.is_empty(), "At least one printer is required");
 
         let printer_count = printers.len();
-        let printer_state = Arc::clone(&printers[0]);
         let printer_connections = vec![false; printer_count];
         let printer_last_updates = vec![None; printer_count];
         let printer_error_messages = vec![None; printer_count];
@@ -183,16 +165,12 @@ impl App {
         };
 
         Self {
-            printer_state,
-            connected: false,
             printers,
             printer_connections,
             connected_count: 0,
             printer_last_updates,
             printer_error_messages,
             active_printer_index: 0,
-            last_update: None,
-            error_message: None,
             should_quit: false,
             controls_locked: true,
             use_celsius: true,
@@ -246,12 +224,6 @@ impl App {
     pub fn set_active_printer(&mut self, index: usize) -> bool {
         if index < self.printers.len() {
             self.active_printer_index = index;
-            // Update legacy fields to point to the new active printer
-            self.printer_state = Arc::clone(&self.printers[index]);
-            self.connected = self.printer_connections[index];
-            self.last_update = self.printer_last_updates[index];
-            self.error_message
-                .clone_from(&self.printer_error_messages[index]);
             true
         } else {
             false
@@ -271,16 +243,11 @@ impl App {
             let was_connected = *conn;
             if was_connected != connected {
                 *conn = connected;
-                // Update cached count based on state transition
                 if connected {
                     self.connected_count += 1;
                 } else {
                     self.connected_count = self.connected_count.saturating_sub(1);
                 }
-            }
-            // Update legacy field if this is the active printer
-            if index == self.active_printer_index {
-                self.connected = connected;
             }
         }
     }
@@ -291,10 +258,6 @@ impl App {
     pub fn set_printer_last_update(&mut self, index: usize, timestamp: Option<Instant>) {
         if let Some(last_update) = self.printer_last_updates.get_mut(index) {
             *last_update = timestamp;
-            // Update legacy field if this is the active printer
-            if index == self.active_printer_index {
-                self.last_update = timestamp;
-            }
         }
     }
 
@@ -313,54 +276,15 @@ impl App {
 
     /// Computes the local timezone offset in seconds from UTC.
     ///
-    /// Uses the system's `date` command to get the timezone offset.
-    /// This is computed once at startup to avoid repeated overhead.
-    /// Returns the offset where positive values are east of UTC and negative values are west.
+    /// Uses libc `localtime_r` to get the offset directly from the OS,
+    /// avoiding the overhead of spawning a subprocess.
     fn compute_timezone_offset() -> i32 {
-        use std::process::Command;
-
-        // Use the `date` command to get timezone offset in +HHMM/-HHMM format
-        // This works on macOS, Linux, and most Unix-like systems
-        if let Ok(output) = Command::new("date").arg("+%z").output() {
-            if output.status.success() {
-                if let Ok(offset_str) = std::str::from_utf8(&output.stdout) {
-                    return Self::parse_timezone_offset(offset_str.trim());
-                }
-            }
+        unsafe {
+            let now = libc::time(std::ptr::null_mut());
+            let mut tm: libc::tm = std::mem::zeroed();
+            libc::localtime_r(&now, &mut tm);
+            tm.tm_gmtoff as i32
         }
-
-        // Fallback: Use environment variable TZ parsing or assume UTC
-        if let Ok(tz) = std::env::var("TZ") {
-            // Simple parsing for common formats like "EST5EDT" or "UTC"
-            if tz.starts_with("UTC") || tz.starts_with("GMT") {
-                // Parse optional offset like "UTC-5" or "GMT+1"
-                if let Some(offset_part) = tz.get(3..) {
-                    if let Ok(hours) = offset_part.parse::<i32>() {
-                        // Note: TZ convention is opposite (EST5 means UTC-5)
-                        return -hours * SECS_PER_HOUR;
-                    }
-                }
-                return 0;
-            }
-        }
-
-        // Final fallback: assume UTC
-        0
-    }
-
-    /// Parses a timezone offset string in +HHMM or -HHMM format.
-    fn parse_timezone_offset(offset_str: &str) -> i32 {
-        if offset_str.len() >= 5 {
-            let sign = if offset_str.starts_with('-') { -1 } else { 1 };
-            // Parse "+HHMM" or "-HHMM" format
-            if let (Ok(hours), Ok(mins)) = (
-                offset_str[1..3].parse::<i32>(),
-                offset_str[3..5].parse::<i32>(),
-            ) {
-                return sign * (hours * SECS_PER_HOUR + mins * SECS_PER_MINUTE);
-            }
-        }
-        0
     }
 
     /// Returns the cached timezone offset in seconds from UTC.
@@ -414,44 +338,67 @@ impl App {
     /// Also updates the legacy `error_message` field if this is the active printer.
     fn set_printer_error(&mut self, index: usize, error: Option<String>) {
         if let Some(err_slot) = self.printer_error_messages.get_mut(index) {
-            if index == self.active_printer_index {
-                // Clone to legacy field first, then move into slot (avoids cloning error)
-                self.error_message = error.clone();
-            }
             *err_slot = error;
         }
     }
 
-    /// Returns the duration since the last state update, if any.
-    pub fn time_since_update(&self) -> Option<Duration> {
-        self.last_update.map(|t| t.elapsed())
+    /// Returns the shared state of the active printer.
+    pub fn active_printer_state(&self) -> &SharedPrinterState {
+        &self.printers[self.active_printer_index]
     }
 
-    /// Returns true if the connection appears stale (connected but no recent messages).
-    /// A connection is considered stale if we're marked as connected but haven't
-    /// received any messages for STALE_CONNECTION_THRESHOLD duration.
+    /// Returns the error message for the active printer, if any.
+    pub fn active_error_message(&self) -> Option<&str> {
+        self.printer_error_messages
+            .get(self.active_printer_index)
+            .and_then(|e| e.as_deref())
+    }
+
+    /// Returns the duration since the last state update for the active printer.
+    pub fn time_since_update(&self) -> Option<Duration> {
+        self.printer_last_updates
+            .get(self.active_printer_index)
+            .copied()
+            .flatten()
+            .map(|t| t.elapsed())
+    }
+
+    /// Returns true if the active connection appears stale.
     #[cfg(test)]
     pub fn is_connection_stale(&self) -> bool {
-        if !self.connected {
+        let connected = self
+            .printer_connections
+            .get(self.active_printer_index)
+            .copied()
+            .unwrap_or(false);
+        if !connected {
             return false;
         }
-        match self.last_update {
+        match self
+            .printer_last_updates
+            .get(self.active_printer_index)
+            .copied()
+            .flatten()
+        {
             Some(t) => t.elapsed() > STALE_CONNECTION_THRESHOLD,
-            None => true, // Connected but never received data
+            None => true,
         }
     }
 
     /// Returns a human-readable status text based on connection and print state.
-    ///
-    /// Maps the printer's gcode_state to user-friendly labels.
-    /// All return values are static strings, so the mutex lock is safely released
-    /// before the return value is used.
     pub fn status_text(&self) -> &'static str {
-        if !self.connected {
+        let connected = self
+            .printer_connections
+            .get(self.active_printer_index)
+            .copied()
+            .unwrap_or(false);
+        if !connected {
             return "Disconnected";
         }
 
-        let state = self.printer_state.lock().expect("state lock poisoned");
+        let state = self.printers[self.active_printer_index]
+            .lock()
+            .expect("state lock poisoned");
         crate::ui::common::gcode_state_to_status(state.print_status.gcode_state)
     }
 
@@ -564,47 +511,43 @@ mod tests {
         #[test]
         fn returns_false_when_disconnected() {
             let app = create_test_app();
-            // App starts disconnected
             assert!(!app.is_connection_stale());
         }
 
         #[test]
         fn returns_true_when_connected_but_never_received_data() {
             let mut app = create_test_app();
-            app.connected = true;
-            app.last_update = None;
+            app.set_printer_connected(0, true);
             assert!(app.is_connection_stale());
         }
 
         #[test]
         fn returns_false_when_connected_with_recent_update() {
             let mut app = create_test_app();
-            app.connected = true;
-            app.last_update = Some(Instant::now());
+            app.set_printer_connected(0, true);
+            app.set_printer_last_update(0, Some(Instant::now()));
             assert!(!app.is_connection_stale());
         }
 
         #[test]
         fn returns_true_when_connected_with_old_update() {
             let mut app = create_test_app();
-            app.connected = true;
-            // Set last_update to a time older than the threshold
-            app.last_update =
-                Some(Instant::now() - STALE_CONNECTION_THRESHOLD - Duration::from_secs(1));
+            app.set_printer_connected(0, true);
+            app.set_printer_last_update(
+                0,
+                Some(Instant::now() - STALE_CONNECTION_THRESHOLD - Duration::from_secs(1)),
+            );
             assert!(app.is_connection_stale());
         }
 
         #[test]
-        fn returns_false_when_update_exactly_at_threshold() {
+        fn returns_false_when_update_near_threshold() {
             let mut app = create_test_app();
-            app.connected = true;
-            // Set last_update to exactly the threshold (not stale yet)
-            app.last_update = Some(Instant::now() - STALE_CONNECTION_THRESHOLD);
-            // Since we check elapsed() > threshold (not >=), this should not be stale
-            // However, due to timing, a tiny amount of time may have passed
-            // So we test with a small buffer
-            app.last_update =
-                Some(Instant::now() - STALE_CONNECTION_THRESHOLD + Duration::from_millis(100));
+            app.set_printer_connected(0, true);
+            app.set_printer_last_update(
+                0,
+                Some(Instant::now() - STALE_CONNECTION_THRESHOLD + Duration::from_millis(100)),
+            );
             assert!(!app.is_connection_stale());
         }
     }

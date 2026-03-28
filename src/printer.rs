@@ -79,6 +79,7 @@ impl ReceivedFields {
     pub(crate) const WORK_LIGHT: u16 = 1 << 4;
     pub(crate) const AUX_FAN: u16 = 1 << 5;
     pub(crate) const CHAMBER_FAN: u16 = 1 << 6;
+    pub(crate) const UPGRADE_STATE: u16 = 1 << 7;
 
     pub(crate) fn set(&mut self, flag: u16) {
         self.0 |= flag;
@@ -134,6 +135,8 @@ pub struct PrinterState {
     pub xcam: XcamState,
     /// IP camera state
     pub ipcam: IpcamState,
+    /// Firmware upgrade state, if an upgrade is in progress
+    pub upgrade_state: Option<UpgradeState>,
     /// Tracks which optional fields the printer has reported.
     /// Used for data-driven capability detection in the UI.
     pub received: ReceivedFields,
@@ -202,6 +205,8 @@ pub struct PrintStatus {
     pub print_error: u32,
     /// Print error code from `mc_print_error_code` MQTT field
     pub mc_print_error_code: u32,
+    /// File preparation progress percentage (0-100) during PREPARE state
+    pub prepare_percent: Option<u8>,
 }
 
 /// Printer stage codes from `stg_cur` MQTT field.
@@ -462,6 +467,22 @@ pub struct AmsState {
     pub current_tray: Option<u8>,
     /// The currently active AMS unit index (0-3)
     pub current_unit: Option<u8>,
+    /// Previous tray (combined index) during a filament change
+    pub tray_pre: Option<u8>,
+    /// Target tray (combined index) during a filament change
+    pub tray_tar: Option<u8>,
+}
+
+impl AmsState {
+    /// Returns a human-readable description of the current filament change.
+    ///
+    /// Formats tray indices as 1-indexed "T1 → T6" for display.
+    /// Returns `None` if tray_pre and tray_tar are not both set.
+    pub fn filament_change_description(&self) -> Option<String> {
+        let pre = self.tray_pre?;
+        let tar = self.tray_tar?;
+        Some(format!("T{} \u{2192} T{}", pre + 1, tar + 1,))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -532,6 +553,26 @@ pub struct IpcamState {
     pub timelapse: bool,
     /// Camera resolution (e.g., "1080p")
     pub resolution: String,
+}
+
+/// Firmware upgrade state from the printer.
+#[derive(Debug, Clone, Default)]
+pub struct UpgradeState {
+    /// Upgrade status string (e.g., "upgrading", "idle")
+    pub status: String,
+    /// Progress percentage (0-100)
+    pub progress: u8,
+    /// Module being upgraded (e.g., "ota")
+    pub module: String,
+    /// Target firmware version
+    pub new_version: String,
+}
+
+impl UpgradeState {
+    /// Returns true if a firmware upgrade is actively in progress.
+    pub fn is_active(&self) -> bool {
+        !self.status.is_empty() && !self.status.eq_ignore_ascii_case("idle") && self.progress > 0
+    }
 }
 
 /// Raw MQTT message structure from Bambu printer
@@ -625,6 +666,8 @@ pub(crate) struct PrintReport {
     pub(crate) gcode_start_time: Option<serde_json::Value>,
     pub(crate) xcam: Option<XcamReport>,
     pub(crate) ipcam: Option<IpcamReport>,
+    pub(crate) gcode_file_prepare_percent: Option<serde_json::Value>,
+    pub(crate) upgrade_state: Option<UpgradeReport>,
 
     // HMS errors
     pub(crate) hms: Option<Vec<HmsReport>>,
@@ -636,10 +679,12 @@ pub(crate) struct LightReport {
     pub(crate) mode: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct AmsReport {
     pub(crate) ams: Option<Vec<AmsUnitReport>>,
     pub(crate) tray_now: Option<String>,
+    pub(crate) tray_pre: Option<String>,
+    pub(crate) tray_tar: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -685,6 +730,35 @@ pub(crate) struct IpcamReport {
     pub(crate) ipcam_record: Option<String>,
     pub(crate) timelapse: Option<String>,
     pub(crate) resolution: Option<String>,
+}
+
+/// Firmware upgrade report from MQTT. Only the fields we display are parsed;
+/// unknown fields are silently ignored by serde.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UpgradeReport {
+    pub(crate) status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_progress")]
+    pub(crate) progress: Option<u8>,
+    pub(crate) module: Option<String>,
+    pub(crate) new_ver_list: Option<Vec<UpgradeVersionEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UpgradeVersionEntry {
+    pub(crate) sw_ver: Option<String>,
+}
+
+/// Deserializes progress that may arrive as a string or integer.
+fn deserialize_progress<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(v.and_then(|v| {
+        v.as_u64()
+            .map(|n| n as u8)
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    }))
 }
 
 /// Deserializes a bool that may arrive as bool, integer, or string from MQTT.
@@ -792,7 +866,12 @@ impl PrinterState {
             self.print_status.remaining_time_mins = v;
         }
         if let Some(v) = &report.gcode_state {
-            self.print_status.gcode_state = GcodeState::from_mqtt(v);
+            let new_state = GcodeState::from_mqtt(v);
+            // Clear prepare_percent when leaving Prepare state
+            if new_state != GcodeState::Prepare {
+                self.print_status.prepare_percent = None;
+            }
+            self.print_status.gcode_state = new_state;
         }
         if let Some(v) = &report.print_type {
             self.print_status.print_type.clone_from(v);
@@ -968,6 +1047,38 @@ impl PrinterState {
                 self.ipcam.resolution.clone_from(v);
             }
         }
+
+        // File preparation progress (can be string or number)
+        if let Some(v) = &report.gcode_file_prepare_percent {
+            let percent = v
+                .as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                .map(|n| n as u8);
+            if let Some(p) = percent {
+                self.print_status.prepare_percent = Some(p);
+            }
+        }
+
+        // Firmware upgrade state
+        if let Some(report) = &report.upgrade_state {
+            self.received.set(ReceivedFields::UPGRADE_STATE);
+            let status = report.status.as_deref().unwrap_or_default();
+            self.upgrade_state = if status.is_empty() || status == "idle" {
+                None
+            } else {
+                Some(UpgradeState {
+                    status: status.to_string(),
+                    progress: report.progress.unwrap_or(0),
+                    module: report.module.clone().unwrap_or_default(),
+                    new_version: report
+                        .new_ver_list
+                        .as_ref()
+                        .and_then(|list| list.first())
+                        .and_then(|entry| entry.sw_ver.clone())
+                        .unwrap_or_default(),
+                })
+            };
+        }
     }
 
     /// Set model and serial suffix from serial number.
@@ -1068,6 +1179,14 @@ impl PrinterState {
                     ams_state.current_tray = None;
                 }
             }
+        }
+
+        // Parse tray_pre/tray_tar for filament change tracking
+        if let Some(tray) = &report.tray_pre {
+            ams_state.tray_pre = tray.parse::<u8>().ok().filter(|&v| v < TRAY_EXTERNAL_SPOOL);
+        }
+        if let Some(tray) = &report.tray_tar {
+            ams_state.tray_tar = tray.parse::<u8>().ok().filter(|&v| v < TRAY_EXTERNAL_SPOOL);
         }
 
         if let Some(units) = &report.ams {
@@ -1777,6 +1896,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("5".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1794,6 +1914,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("0".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1811,6 +1932,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("254".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1828,6 +1950,7 @@ mod tests {
             let report = AmsReport {
                 tray_now: Some("255".to_string()),
                 ams: Some(vec![]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1863,6 +1986,7 @@ mod tests {
                         },
                     ]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1911,6 +2035,7 @@ mod tests {
                         },
                     ]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1948,6 +2073,7 @@ mod tests {
                         },
                     ]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -1974,6 +2100,7 @@ mod tests {
                         ..Default::default()
                     }]),
                 }]),
+                ..Default::default()
             };
 
             state.update_ams(&report);
@@ -2013,6 +2140,7 @@ mod tests {
                     }],
                     current_unit: None,
                     current_tray: None,
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -2039,6 +2167,7 @@ mod tests {
                     }],
                     current_unit: Some(0),
                     current_tray: Some(0),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -2065,6 +2194,7 @@ mod tests {
                     }],
                     current_unit: Some(0),
                     current_tray: Some(0),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -2109,6 +2239,7 @@ mod tests {
                     ],
                     current_unit: Some(1), // Second unit selected
                     current_tray: Some(0),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -2867,6 +2998,192 @@ mod tests {
             };
             let temps = Temperatures::default();
             assert_eq!(status.print_phase(&temps), Some("Paused"));
+        }
+    }
+
+    mod prepare_percent_tests {
+        use super::*;
+
+        #[test]
+        fn parses_from_mqtt_json() {
+            let json = r#"{"gcode_file_prepare_percent": 45}"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            assert_eq!(
+                report.gcode_file_prepare_percent.and_then(|v| v.as_u64()),
+                Some(45)
+            );
+        }
+
+        #[test]
+        fn defaults_to_none() {
+            let json = r#"{}"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            assert_eq!(report.gcode_file_prepare_percent, None);
+        }
+
+        #[test]
+        fn stored_in_print_status() {
+            let mut state = PrinterState::default();
+            let report = PrintReport {
+                gcode_file_prepare_percent: Some(serde_json::json!(72)),
+                ..Default::default()
+            };
+            state.update_from_print_report(&report);
+            assert_eq!(state.print_status.prepare_percent, Some(72));
+        }
+
+        #[test]
+        fn cleared_on_state_transition_from_prepare() {
+            let mut state = PrinterState::default();
+            state.print_status.prepare_percent = Some(50);
+            state.print_status.gcode_state = GcodeState::Prepare;
+            let report = PrintReport {
+                gcode_state: Some("RUNNING".to_string()),
+                ..Default::default()
+            };
+            state.update_from_print_report(&report);
+            assert_eq!(state.print_status.prepare_percent, None);
+        }
+
+        #[test]
+        fn not_cleared_when_state_stays_prepare() {
+            let mut state = PrinterState::default();
+            state.print_status.prepare_percent = Some(50);
+            state.print_status.gcode_state = GcodeState::Prepare;
+            // No gcode_state in report means it won't be updated
+            let report = PrintReport {
+                gcode_file_prepare_percent: Some(serde_json::json!(75)),
+                ..Default::default()
+            };
+            state.update_from_print_report(&report);
+            assert_eq!(state.print_status.prepare_percent, Some(75));
+        }
+    }
+
+    mod tray_pre_tar_tests {
+        use super::*;
+
+        #[test]
+        fn parses_from_ams_report() {
+            let json = r#"{"tray_now": "0", "tray_pre": "0", "tray_tar": "5"}"#;
+            let report: AmsReport = serde_json::from_str(json).expect("parse");
+            assert_eq!(report.tray_pre, Some("0".to_string()));
+            assert_eq!(report.tray_tar, Some("5".to_string()));
+        }
+
+        #[test]
+        fn stored_in_ams_state() {
+            let mut state = PrinterState::default();
+            let ams_report = AmsReport {
+                ams: None,
+                tray_now: None,
+                tray_pre: Some("0".to_string()),
+                tray_tar: Some("5".to_string()),
+            };
+            state.update_ams(&ams_report);
+            let ams = state.ams.expect("ams should be set");
+            assert_eq!(ams.tray_pre, Some(0));
+            assert_eq!(ams.tray_tar, Some(5));
+        }
+
+        #[test]
+        fn filters_external_spool_values() {
+            let mut state = PrinterState::default();
+            let ams_report = AmsReport {
+                ams: None,
+                tray_now: None,
+                tray_pre: Some("254".to_string()),
+                tray_tar: Some("255".to_string()),
+            };
+            state.update_ams(&ams_report);
+            let ams = state.ams.expect("ams should be set");
+            assert_eq!(ams.tray_pre, None);
+            assert_eq!(ams.tray_tar, None);
+        }
+
+        #[test]
+        fn filament_change_description_both_set() {
+            let ams = AmsState {
+                tray_pre: Some(0),
+                tray_tar: Some(5),
+                ..Default::default()
+            };
+            assert_eq!(
+                ams.filament_change_description(),
+                Some("T1 \u{2192} T6".to_string())
+            );
+        }
+
+        #[test]
+        fn filament_change_description_none_when_missing() {
+            let ams = AmsState {
+                tray_pre: Some(0),
+                tray_tar: None,
+                ..Default::default()
+            };
+            assert_eq!(ams.filament_change_description(), None);
+        }
+    }
+
+    mod upgrade_state_tests {
+        use super::*;
+
+        #[test]
+        fn parses_active_upgrade() {
+            let json = r#"{
+                "upgrade_state": {
+                    "status": "upgrading",
+                    "progress": "45",
+                    "module": "ota",
+                    "new_ver_list": [{"sw_ver": "01.09.00.00"}]
+                }
+            }"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            let mut state = PrinterState::default();
+            state.update_from_print_report(&report);
+            let upgrade = state.upgrade_state.expect("upgrade should be set");
+            assert_eq!(upgrade.status, "upgrading");
+            assert_eq!(upgrade.progress, 45);
+            assert_eq!(upgrade.module, "ota");
+            assert_eq!(upgrade.new_version, "01.09.00.00");
+            assert!(upgrade.is_active());
+        }
+
+        #[test]
+        fn idle_upgrade_clears_state() {
+            let json = r#"{"upgrade_state": {"status": "idle"}}"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            let mut state = PrinterState::default();
+            state.update_from_print_report(&report);
+            assert!(state.upgrade_state.is_none());
+        }
+
+        #[test]
+        fn handles_numeric_progress() {
+            let json = r#"{"upgrade_state": {"status": "upgrading", "progress": 80}}"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            let mut state = PrinterState::default();
+            state.update_from_print_report(&report);
+            let upgrade = state.upgrade_state.expect("upgrade should be set");
+            assert_eq!(upgrade.progress, 80);
+        }
+
+        #[test]
+        fn handles_missing_fields() {
+            let json = r#"{"upgrade_state": {"status": "upgrading"}}"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            let mut state = PrinterState::default();
+            state.update_from_print_report(&report);
+            let upgrade = state.upgrade_state.expect("upgrade should be set");
+            assert_eq!(upgrade.progress, 0);
+            assert!(upgrade.module.is_empty());
+            assert!(upgrade.new_version.is_empty());
+        }
+
+        #[test]
+        fn is_active_false_for_empty_status() {
+            let upgrade = UpgradeState::default();
+            assert!(!upgrade.is_active());
         }
     }
 }

@@ -115,6 +115,7 @@ fn office_x1c() -> PrinterState {
             }],
             current_tray: Some(0),
             current_unit: Some(0),
+            ..Default::default()
         }),
         lights: LightState {
             chamber_light: true,
@@ -138,11 +139,12 @@ fn office_x1c() -> PrinterState {
             timelapse: true,
             resolution: "1080p".to_string(),
         },
+        upgrade_state: None,
         received,
     }
 }
 
-/// Printer 2: Workshop P1S — paused at 42% printing "Phone Stand".
+/// Printer 2: Workshop P1S — printing "Phone Stand", currently changing filament.
 fn workshop_p1s() -> PrinterState {
     let mut received = ReceivedFields::default();
     received.set(ReceivedFields::HEATBREAK_FAN);
@@ -160,8 +162,8 @@ fn workshop_p1s() -> PrinterState {
             layer_num: 85,
             total_layers: 200,
             remaining_time_mins: 87,
-            gcode_state: GcodeState::Pause,
-            stage_code: 16, // USER_PAUSED
+            gcode_state: GcodeState::Running,
+            stage_code: 4, // CHANGING_FILAMENT
             ..Default::default()
         },
         temperatures: Temperatures {
@@ -224,6 +226,8 @@ fn workshop_p1s() -> PrinterState {
             }],
             current_tray: Some(0),
             current_unit: Some(0),
+            tray_pre: Some(0),
+            tray_tar: Some(5),
         }),
         lights: LightState {
             chamber_light: false,
@@ -245,17 +249,25 @@ fn workshop_p1s() -> PrinterState {
         gcode_start_time: None,
         xcam: XcamState::default(),
         ipcam: IpcamState::default(),
+        upgrade_state: None,
         received,
     }
 }
 
-/// Printer 3: Desk A1 Mini — idle, no job.
+/// Printer 3: Desk A1 Mini — preparing a print job (file prep at 45%).
 fn desk_a1_mini() -> PrinterState {
     PrinterState {
         connected: true,
         printer_name: "Desk A1 Mini".to_string(),
         printer_model: "A1 Mini".to_string(),
         serial_suffix: "3005".to_string(),
+        print_status: PrintStatus {
+            gcode_file: "Articulated Dragon.gcode.3mf".to_string(),
+            subtask_name: "Articulated Dragon".to_string(),
+            gcode_state: GcodeState::Prepare,
+            prepare_percent: Some(45),
+            ..Default::default()
+        },
         wifi_signal: "-68dBm".to_string(),
         hms_received: true,
         firmware_version: "01.06.00.00".to_string(),
