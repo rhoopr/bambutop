@@ -9,26 +9,17 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 
 ## Features
 
-- Job name, layers, elapsed time, time remaining, and ETA clock time
-- Print phase display: heating bed, heating nozzle, auto-leveling, printing, etc.
-- Visual progress bar with percentage
-- Print failure reason and error codes
-- Nozzle, bed, and chamber temperatures with visual gauges
-- Celsius/Fahrenheit toggle
-- Safe chamber temperature range based on active filament type
-- Part cooling, auxiliary, chamber, and heatbreak fan speeds
-- Speed control: Silent / Standard / Sport / Ludicrous
-- Chamber light and work light toggles
-- Pause, resume, and cancel with confirmation prompts
-- Controls lock to prevent accidental changes
-- AMS humidity grade (A-E), filament colors, materials, brand, remaining percentage, and nozzle temp range
-- HMS alerts with severity and timestamps
-- WiFi signal strength indicator
-- Firmware version and nozzle diameter
-- AI spaghetti detection, recording, and timelapse indicators
-- Desktop notifications for print completions, failures, and HMS alerts
-- Multi-printer monitoring with aggregate overview grid
-- Demo mode for trying it out without a printer connection
+**Print Monitoring** - Job name, layers, elapsed/remaining time, ETA clock, visual progress bar, print phase (heating, leveling, printing, etc.), and failure reason with error codes.
+
+**Temperatures & Fans** - Nozzle, bed, and chamber gauges with Celsius/Fahrenheit toggle. Safe chamber range based on active filament type. Part cooling, auxiliary, chamber, and heatbreak fan speeds.
+
+**Printer Controls** - Speed (Silent/Standard/Sport/Ludicrous), chamber and work lights, pause/resume/cancel with confirmation. Controls lock to prevent accidents.
+
+**AMS** - Humidity grade (A-E), filament colors, materials, brand, remaining percentage, and nozzle temp range per slot.
+
+**System** - HMS alerts with severity and timestamps, WiFi signal, firmware version, nozzle diameter, AI spaghetti detection, recording, and timelapse indicators.
+
+**Multi-Printer** - Monitor up to 9 printers with an aggregate overview grid. Tab/number keys to switch. Desktop notifications for completions, failures, and HMS alerts.
 
 ## Supported Printers
 
