@@ -106,7 +106,13 @@ name = "Workshop X1C"
 ip = "192.168.1.101"
 serial = "01S00A987654321"
 access_code = "87654321"
+
+[notifications]
+errors = true       # print failures and HMS alerts
+completions = true  # print finished
 ```
+
+Both notification settings default to `true` if omitted. You can also toggle them at runtime with `e` and `n`.
 
 ## Keyboard Shortcuts
 
