@@ -202,8 +202,16 @@ impl Config {
         let content =
             toml::to_string_pretty(&save_config).with_context(|| "Failed to serialize config")?;
 
-        fs::write(&config_path, content)
+        fs::write(&config_path, &content)
             .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
+
+        // Restrict config file permissions to owner-only since it contains access codes
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
+                .with_context(|| "Failed to set config file permissions")?;
+        }
 
         Ok(())
     }

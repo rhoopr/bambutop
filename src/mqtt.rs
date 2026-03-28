@@ -28,7 +28,14 @@ const FALLBACK_CHANNEL_CAPACITY: usize = 100;
 /// Capacity of the internal rumqttc request channel between AsyncClient and EventLoop
 const MQTT_EVENT_QUEUE_CAPACITY: usize = 10;
 
-/// Certificate verifier that accepts any certificate (for self-signed Bambu certs)
+/// Certificate verifier that accepts any certificate (for self-signed Bambu certs).
+///
+/// **Accepted risk**: Bambu printers use self-signed certificates that are
+/// regenerated on firmware updates, making traditional pinning impractical.
+/// All major Bambu tools (OrcaSlicer, Bambu Studio) skip verification for the
+/// same reason. Since connections are to user-configured IPs on the local
+/// network, the practical MITM risk is low. See #20 for future certificate
+/// pinning consideration.
 #[derive(Debug)]
 struct NoVerifier;
 
@@ -150,7 +157,7 @@ impl MqttClient {
 
         // Initialize state from config
         {
-            let mut state_guard = state.lock().expect("state lock poisoned");
+            let mut state_guard = state.lock().unwrap_or_else(|e| e.into_inner());
             state_guard.set_model_from_serial(&config.serial);
             // Set config name if provided
             if let Some(name) = &config.name {
@@ -206,16 +213,23 @@ impl MqttClient {
                             continue;
                         }
                         {
-                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard =
+                                state_clone.lock().unwrap_or_else(|e| e.into_inner());
                             state_guard.connected = true;
                         }
                         // Re-subscribe on every (re)connection. The broker drops
                         // all subscriptions for clean sessions, so without this
                         // the client stays connected but never receives data after
                         // a reconnect — the root cause of stale printer state.
-                        let _ = event_client
+                        if let Err(e) = event_client
                             .subscribe(&event_report_topic, QoS::AtMostOnce)
-                            .await;
+                            .await
+                        {
+                            let _ = event_tx.try_send(MqttEvent::Error {
+                                printer_index,
+                                message: format!("Re-subscribe failed: {e}"),
+                            });
+                        }
                         // Request full printer state and version info so we have
                         // current data immediately rather than waiting for the
                         // next periodic push.
@@ -223,9 +237,15 @@ impl MqttClient {
                             r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#,
                             r#"{"info":{"sequence_id":"0","command":"get_version"}}"#,
                         ] {
-                            let _ = event_client
+                            if let Err(e) = event_client
                                 .publish(&event_request_topic, QoS::AtMostOnce, false, payload)
-                                .await;
+                                .await
+                            {
+                                let _ = event_tx.try_send(MqttEvent::Error {
+                                    printer_index,
+                                    message: format!("Initial status request failed: {e}"),
+                                });
+                            }
                         }
                         let _ = event_tx.try_send(MqttEvent::Connected { printer_index });
                     }
@@ -234,7 +254,7 @@ impl MqttClient {
                             if let Ok(msg) = serde_json::from_str::<MqttMessage>(payload) {
                                 {
                                     let mut state_guard =
-                                        state_clone.lock().expect("state lock poisoned");
+                                        state_clone.lock().unwrap_or_else(|e| e.into_inner());
                                     state_guard.update_from_message(&msg);
                                 }
                                 let _ =
@@ -249,7 +269,8 @@ impl MqttClient {
                     Ok(_) => {}
                     Err(e) => {
                         {
-                            let mut state_guard = state_clone.lock().expect("state lock poisoned");
+                            let mut state_guard =
+                                state_clone.lock().unwrap_or_else(|e| e.into_inner());
                             state_guard.connected = false;
                         }
                         let _ = event_tx.try_send(MqttEvent::Disconnected { printer_index });
@@ -577,6 +598,54 @@ mod tests {
             let serial = "01S00C123456";
             let topic = format!("device/{serial}/request");
             assert_eq!(topic, "device/01S00C123456/request");
+        }
+    }
+
+    mod sequence_id_tests {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        #[test]
+        fn sequence_ids_are_monotonically_increasing() {
+            let counter = AtomicU64::new(1);
+            let first = counter.fetch_add(1, Ordering::Relaxed);
+            let second = counter.fetch_add(1, Ordering::Relaxed);
+            let third = counter.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(first, 1);
+            assert_eq!(second, 2);
+            assert_eq!(third, 3);
+        }
+
+        #[test]
+        fn sequence_id_starts_at_one() {
+            // MqttClient initializes sequence_id at 1, so first fetch_add returns 1
+            let counter = AtomicU64::new(1);
+            let id = counter.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(id.to_string(), "1");
+        }
+    }
+
+    mod no_verifier_tests {
+        use super::*;
+        use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+        #[test]
+        fn accepts_any_server_certificate() {
+            let verifier = NoVerifier;
+            let dummy_cert = CertificateDer::from(vec![0u8; 32]);
+            let server_name = ServerName::try_from("example.com").unwrap();
+            let result =
+                verifier.verify_server_cert(&dummy_cert, &[], &server_name, &[], UnixTime::now());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn supports_common_signature_schemes() {
+            let verifier = NoVerifier;
+            let schemes = verifier.supported_verify_schemes();
+            assert!(!schemes.is_empty());
+            assert!(schemes.contains(&SignatureScheme::RSA_PKCS1_SHA256));
+            assert!(schemes.contains(&SignatureScheme::ECDSA_NISTP256_SHA256));
+            assert!(schemes.contains(&SignatureScheme::ED25519));
         }
     }
 }

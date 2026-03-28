@@ -280,3 +280,133 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, use_celsius: 
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::printer::{AmsState, AmsTray, AmsUnit};
+
+    fn make_tray(id: u8, material: &str, sub_brand: &str) -> AmsTray {
+        AmsTray {
+            id,
+            material: material.to_string(),
+            sub_brand: sub_brand.to_string(),
+            ..AmsTray::default()
+        }
+    }
+
+    fn make_unit(id: u8, trays: Vec<AmsTray>, is_lite: bool) -> AmsUnit {
+        AmsUnit {
+            id,
+            humidity: 5,
+            trays,
+            is_lite,
+        }
+    }
+
+    mod panel_height_tests {
+        use super::*;
+
+        #[test]
+        fn no_ams_returns_minimum_height() {
+            let state = PrinterState::default();
+            // No AMS: 1 line ("No AMS detected") + 2 border = 3
+            assert_eq!(panel_height(&state), 3);
+        }
+
+        #[test]
+        fn single_unit_no_sub_brands() {
+            let mut state = PrinterState::default();
+            let trays = vec![
+                make_tray(0, "PLA", ""),
+                make_tray(1, "PETG", ""),
+                make_tray(2, "", ""),
+                make_tray(3, "", ""),
+            ];
+            state.ams = Some(AmsState {
+                units: vec![make_unit(0, trays, false)],
+                current_tray: None,
+                current_unit: None,
+                tray_pre: None,
+                tray_tar: None,
+            });
+            // Unit 0: header(1) + humidity(1) + filament_header(1) + 4 trays(4) = 7
+            // + borders(2) = 9
+            assert_eq!(panel_height(&state), 9);
+        }
+
+        #[test]
+        fn single_lite_unit_skips_humidity() {
+            let mut state = PrinterState::default();
+            let trays = vec![make_tray(0, "PLA", ""), make_tray(1, "PLA", "")];
+            state.ams = Some(AmsState {
+                units: vec![make_unit(0, trays, true)],
+                current_tray: None,
+                current_unit: None,
+                tray_pre: None,
+                tray_tar: None,
+            });
+            // Lite unit 0: header(1) + NO humidity + filament_header(1) + 2 trays(2) = 4
+            // + borders(2) = 6
+            assert_eq!(panel_height(&state), 6);
+        }
+
+        #[test]
+        fn tray_with_sub_brand_adds_line() {
+            let mut state = PrinterState::default();
+            let trays = vec![make_tray(0, "PLA", "Bambu PLA Basic")];
+            state.ams = Some(AmsState {
+                units: vec![make_unit(0, trays, false)],
+                current_tray: None,
+                current_unit: None,
+                tray_pre: None,
+                tray_tar: None,
+            });
+            // Unit 0: header(1) + humidity(1) + filament_header(1) + tray(1) + sub_brand(1) = 5
+            // + borders(2) = 7
+            assert_eq!(panel_height(&state), 7);
+        }
+
+        #[test]
+        fn two_units_adds_separator_and_spacer() {
+            let mut state = PrinterState::default();
+            let trays1 = vec![make_tray(0, "PLA", "")];
+            let trays2 = vec![make_tray(0, "PETG", "")];
+            state.ams = Some(AmsState {
+                units: vec![make_unit(0, trays1, false), make_unit(1, trays2, false)],
+                current_tray: None,
+                current_unit: None,
+                tray_pre: None,
+                tray_tar: None,
+            });
+            // Unit 0: header(1) + humidity(1) + filament_header(1) + tray(1) = 4
+            // Unit 1: separator(1) + spacer(1) + header(1) + humidity(1) + filament_header(1) + tray(1) = 6
+            // Total: 10 + borders(2) = 12
+            assert_eq!(panel_height(&state), 12);
+        }
+
+        #[test]
+        fn single_non_first_unit_has_spacer_but_no_separator() {
+            let mut state = PrinterState::default();
+            let trays = vec![make_tray(0, "PLA", "")];
+            // Single unit with id=1 (not first by id, but only unit in list)
+            state.ams = Some(AmsState {
+                units: vec![make_unit(1, trays, false)],
+                current_tray: None,
+                current_unit: None,
+                tray_pre: None,
+                tray_tar: None,
+            });
+            // Single unit with id>0, num_units=1: no separator, but spacer(1)
+            // spacer(1) + header(1) + humidity(1) + filament_header(1) + tray(1) = 5
+            // + borders(2) = 7
+            assert_eq!(panel_height(&state), 7);
+        }
+
+        #[test]
+        fn humidity_grade_display_values() {
+            // Verify the humidity grade mapping used in render
+            assert_eq!(HUMIDITY_GRADES, ["A", "B", "C", "D", "E"]);
+        }
+    }
+}

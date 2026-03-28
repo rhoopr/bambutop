@@ -1,6 +1,6 @@
 # BambuTop
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest) ![GitHub Downloads](https://img.shields.io/github/downloads/rhoopr/bambutop/total) [![Homebrew](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew)](https://github.com/rhoopr/homebrew-bambutop)
+[![CI](https://github.com/rhoopr/bambutop/actions/workflows/ci.yml/badge.svg)](https://github.com/rhoopr/bambutop/actions/workflows/ci.yml) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![GitHub release](https://img.shields.io/github/v/release/rhoopr/bambutop)](https://github.com/rhoopr/bambutop/releases/latest) ![GitHub Downloads](https://img.shields.io/github/downloads/rhoopr/bambutop/total) [![Homebrew](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew)](https://github.com/rhoopr/homebrew-bambutop)
 
 A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D printer.
 
@@ -9,39 +9,26 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 
 ## Features
 
-**Print Monitoring**
-- Job name, layer count, elapsed time, time remaining, and ETA clock time
-- Current print phase: Heating Bed, Heating Nozzle, Auto-Leveling, Printing, etc.
+- Job name, layers, elapsed time, time remaining, and ETA clock time
+- Print phase display: heating bed, heating nozzle, auto-leveling, printing, etc.
 - Visual progress bar with percentage
-- Print failure reason and error codes when a job fails
-
-**Temperatures & Fans**
+- Print failure reason and error codes
 - Nozzle, bed, and chamber temperatures with visual gauges
-- Toggle between Celsius and Fahrenheit
-- Safe chamber temperature range based on active filament type (PLA, PETG, ABS, etc.)
+- Celsius/Fahrenheit toggle
+- Safe chamber temperature range based on active filament type
 - Part cooling, auxiliary, chamber, and heatbreak fan speeds
-
-**Printer Controls**
-- Adjust speed: Silent / Standard / Sport / Ludicrous
-- Toggle chamber light and work light
-- Pause, resume, and cancel prints (with confirmation)
+- Speed control: Silent / Standard / Sport / Ludicrous
+- Chamber light and work light toggles
+- Pause, resume, and cancel with confirmation prompts
 - Controls lock to prevent accidental changes
-
-**AMS & Filament**
-- Humidity grade (A-E) per AMS unit
-- Filament colors, materials, brand, and remaining percentages
-- Recommended nozzle temperature range per filament
-
-**System Info**
-- HMS (Health Management System) alerts with severity and timestamps
-- WiFi signal strength with visual indicator
+- AMS humidity grade (A-E), filament colors, materials, brand, remaining percentage, and nozzle temp range
+- HMS alerts with severity and timestamps
+- WiFi signal strength indicator
 - Firmware version and nozzle diameter
 - AI spaghetti detection, recording, and timelapse indicators
-
-**Multi-Printer Support**
-- Monitor multiple printers from a single terminal
-- Aggregate overview grid with per-printer status cards
-- Navigate with Tab, Shift+Tab, or number keys 1-9
+- Desktop notifications for print completions, failures, and HMS alerts
+- Multi-printer monitoring with aggregate overview grid
+- Demo mode for trying it out without a printer connection
 
 ## Supported Printers
 
@@ -51,6 +38,8 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 | P Series | P1P, P1S, P2S |
 | A Series | A1, A1 Mini |
 | H Series | H2C, H2S, H2D, H2D Pro |
+
+Any Bambu printer that supports LAN mode should work. If yours isn't listed and it does, open an issue.
 
 ## Installation
 
@@ -97,13 +86,13 @@ You'll need three pieces of information per printer:
 
 | Setting | Where to Find It |
 |---------|------------------|
-| **IP Address** | Router's connected devices list, or Bambu Studio > Device > Network |
-| **Serial Number** | Printer label, or Bambu Studio > Device info |
-| **Access Code** | Printer screen > Settings > Network > Access Code |
+| IP Address | Router's connected devices list, or Bambu Studio > Device > Network |
+| Serial Number | Printer label, or Bambu Studio > Device info |
+| Access Code | Printer screen > Settings > Network > Access Code |
 
 ## Multi-Printer Setup
 
-The setup wizard will ask if you want to add additional printers. You can also edit the config file directly at `~/.config/bambutop/config.toml`:
+The setup wizard asks if you want to add more printers. You can also edit the config file directly at `~/.config/bambutop/config.toml`:
 
 ```toml
 [[printers]]
@@ -131,6 +120,8 @@ access_code = "87654321"
 | `a` | Aggregate overview |
 | `r` | Refresh all printers |
 | `u` | Toggle °C / °F |
+| `n` | Toggle completion notifications |
+| `e` | Toggle error notifications |
 | `x` | Lock/unlock controls |
 | `l` | Toggle chamber light |
 | `w` | Toggle work light |
@@ -143,36 +134,47 @@ Controls that affect the printer (`l`, `w`, `+/-`, `Space`, `c`) require unlocki
 ## Command-Line Options
 
 ```bash
+# First run - setup wizard
+bambutop
+
 # Connect directly (saves to config)
 bambutop --ip 192.168.1.100 --serial YOUR_SERIAL --access-code YOUR_CODE
 
 # Reset config and re-run setup wizard
 bambutop --reset
+
+# Try it out with fake data, no printer needed
+bambutop --demo
 ```
+
+> **Note:** Command-line arguments are visible to other users on the system via `ps`. For persistent use, prefer the config file at `~/.config/bambutop/config.toml` which is created with owner-only permissions.
 
 ## Troubleshooting
 
 **"Connection refused" or timeout**
 - Verify the printer's IP address is correct
-- Ensure your computer is on the same network as the printer
+- Make sure your computer is on the same network as the printer
 - Try pinging the printer: `ping 192.168.1.100`
 
 **"Authentication failed"**
 - Double-check your access code on the printer's screen
-- The access code may have changed — regenerate it if needed
+- The access code may have changed - regenerate it if needed
 
 **Display looks garbled**
-- Ensure your terminal supports Unicode
+- Make sure your terminal supports Unicode
 - Try a different terminal (iTerm2, Ghostty, Alacritty, kitty, etc.)
+
+## Contributing
+
+PRs and bug reports welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Acknowledgments
 
-This project wouldn't be possible without the work of the Bambu Lab community:
+This project wouldn't exist without the Bambu Lab community's reverse-engineering work:
 
-- **[OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI)** — Comprehensive reverse-engineered MQTT protocol documentation
-- **[ha-bambulab](https://github.com/greghesp/ha-bambulab)** — Home Assistant integration with extensive field mappings and protocol insights
+- [OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI) - MQTT protocol documentation
+- [ha-bambulab](https://github.com/greghesp/ha-bambulab) - Home Assistant integration with field mappings and protocol insights
 
 ## License
 
-GPLv3 — See [LICENSE](LICENSE) for details.
-
+GPLv3 - see [LICENSE](LICENSE). Full version history in [CHANGELOG.md](CHANGELOG.md).

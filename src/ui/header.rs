@@ -253,3 +253,139 @@ fn format_relative_time(instant: Instant) -> Cow<'static, str> {
         Cow::Owned(format!("{}d ago", secs / SECS_PER_DAY))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    mod format_relative_time_tests {
+        use super::*;
+
+        #[test]
+        fn just_now_for_recent() {
+            let instant = Instant::now();
+            assert_eq!(format_relative_time(instant), "just now");
+        }
+
+        #[test]
+        fn just_now_at_59_seconds() {
+            let instant = Instant::now() - Duration::from_secs(59);
+            assert_eq!(format_relative_time(instant), "just now");
+        }
+
+        #[test]
+        fn minutes_at_60_seconds() {
+            let instant = Instant::now() - Duration::from_secs(60);
+            assert_eq!(format_relative_time(instant), "1m ago");
+        }
+
+        #[test]
+        fn minutes_at_30_min() {
+            let instant = Instant::now() - Duration::from_secs(30 * 60);
+            assert_eq!(format_relative_time(instant), "30m ago");
+        }
+
+        #[test]
+        fn hours_at_3600_seconds() {
+            let instant = Instant::now() - Duration::from_secs(3600);
+            assert_eq!(format_relative_time(instant), "1h ago");
+        }
+
+        #[test]
+        fn hours_at_5_hours() {
+            let instant = Instant::now() - Duration::from_secs(5 * 3600);
+            assert_eq!(format_relative_time(instant), "5h ago");
+        }
+
+        #[test]
+        fn days_at_86400_seconds() {
+            let instant = Instant::now() - Duration::from_secs(86_400);
+            assert_eq!(format_relative_time(instant), "1d ago");
+        }
+
+        #[test]
+        fn days_at_3_days() {
+            let instant = Instant::now() - Duration::from_secs(3 * 86_400);
+            assert_eq!(format_relative_time(instant), "3d ago");
+        }
+    }
+
+    mod render_wifi_signal_tests {
+        use super::*;
+        use ratatui::style::Color;
+
+        #[test]
+        fn empty_signal_shows_dashes() {
+            let spans = render_wifi_signal("");
+            assert_eq!(spans.len(), 3);
+            assert_eq!(spans[1].content, "--");
+        }
+
+        #[test]
+        fn strong_signal_is_green() {
+            let spans = render_wifi_signal("-40dBm");
+            // Should have WiFi label, bars, space, signal value, space
+            assert_eq!(spans.len(), 5);
+            assert_eq!(spans[1].style.fg, Some(Color::Green));
+            assert_eq!(spans[3].content, "-40dBm");
+        }
+
+        #[test]
+        fn medium_signal_is_yellow() {
+            let spans = render_wifi_signal("-60dBm");
+            assert_eq!(spans.len(), 5);
+            assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        }
+
+        #[test]
+        fn weak_signal_is_red() {
+            let spans = render_wifi_signal("-80dBm");
+            assert_eq!(spans.len(), 5);
+            assert_eq!(spans[1].style.fg, Some(Color::Red));
+        }
+
+        #[test]
+        fn unparseable_signal_uses_default_weak() {
+            let spans = render_wifi_signal("unknown");
+            assert_eq!(spans.len(), 5);
+            // Default is -100 dBm which is weak (red)
+            assert_eq!(spans[1].style.fg, Some(Color::Red));
+        }
+
+        #[test]
+        fn boundary_strong_threshold() {
+            // -50 is not > -50, so should be medium (yellow)
+            let spans = render_wifi_signal("-50dBm");
+            assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        }
+
+        #[test]
+        fn boundary_medium_threshold() {
+            // -70 is not > -70, so should be weak (red)
+            let spans = render_wifi_signal("-70dBm");
+            assert_eq!(spans[1].style.fg, Some(Color::Red));
+        }
+
+        #[test]
+        fn just_above_strong_threshold() {
+            // -49 > -50, so should be strong (green)
+            let spans = render_wifi_signal("-49dBm");
+            assert_eq!(spans[1].style.fg, Some(Color::Green));
+        }
+    }
+
+    mod hms_severity_constants_tests {
+        use super::*;
+
+        #[test]
+        fn severity_warning_is_one() {
+            assert_eq!(HMS_SEVERITY_WARNING, 1);
+        }
+
+        #[test]
+        fn severity_error_is_two() {
+            assert_eq!(HMS_SEVERITY_ERROR, 2);
+        }
+    }
+}

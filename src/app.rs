@@ -7,6 +7,7 @@
 use crate::config::NotificationConfig;
 use crate::mqtt::{MqttEvent, SharedPrinterState};
 use crate::printer::{GcodeState, PrinterState};
+use anyhow::{bail, Result};
 use std::collections::{HashSet, VecDeque};
 #[cfg(test)]
 use std::sync::Arc;
@@ -146,9 +147,14 @@ impl App {
     /// Creates a new App instance with multiple printer states.
     ///
     /// The first printer in the list becomes the active printer.
-    /// Panics if the printers vector is empty.
-    pub fn new_multi(printers: Vec<SharedPrinterState>, notifications: NotificationConfig) -> Self {
-        assert!(!printers.is_empty(), "At least one printer is required");
+    /// Returns an error if the printers vector is empty.
+    pub fn new_multi(
+        printers: Vec<SharedPrinterState>,
+        notifications: NotificationConfig,
+    ) -> Result<Self> {
+        if printers.is_empty() {
+            bail!("At least one printer is required");
+        }
 
         let printer_count = printers.len();
         let printer_connections = vec![false; printer_count];
@@ -158,7 +164,7 @@ impl App {
         // Take initial snapshots of all printers
         let cached_snapshots: Vec<PrinterState> = printers
             .iter()
-            .map(|p| p.lock().expect("state lock poisoned").clone())
+            .map(|p| p.lock().unwrap_or_else(|e| e.into_inner()).clone())
             .collect();
 
         // Use aggregate view when multiple printers, single view otherwise
@@ -168,7 +174,7 @@ impl App {
             ViewMode::Single
         };
 
-        Self {
+        Ok(Self {
             printers,
             printer_connections,
             connected_count: 0,
@@ -187,7 +193,7 @@ impl App {
             cached_snapshots,
             snapshot_dirty: vec![true; printer_count],
             notifications,
-        }
+        })
     }
 
     // ========================================================================
@@ -399,7 +405,7 @@ impl App {
 
         let state = self.printers[self.active_printer_index]
             .lock()
-            .expect("state lock poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         crate::ui::common::gcode_state_to_status(state.print_status.gcode_state)
     }
 
@@ -418,7 +424,9 @@ impl App {
         for (i, dirty) in self.snapshot_dirty.iter_mut().enumerate() {
             if *dirty {
                 if let Some(printer) = self.printers.get(i) {
-                    self.cached_snapshots[i] = printer.lock().expect("state lock poisoned").clone();
+                    if let Some(snapshot) = self.cached_snapshots.get_mut(i) {
+                        *snapshot = printer.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    }
                 }
                 *dirty = false;
             }
@@ -487,7 +495,7 @@ impl App {
             Some(p) => p,
             None => return,
         };
-        let state = shared.lock().expect("state lock poisoned");
+        let state = shared.lock().unwrap_or_else(|e| e.into_inner());
         let new_gcode = state.print_status.gcode_state;
 
         // Detect transitions
@@ -742,6 +750,312 @@ mod tests {
                 vec![make_hms_error(0x0700_0100, "AMS warning")];
             app.check_state_notifications(0);
             assert!(app.toasts.is_empty());
+        }
+    }
+
+    mod toast_queue_tests {
+        use super::*;
+
+        #[test]
+        fn toast_overflow_removes_oldest() {
+            let mut app = create_test_app();
+            app.add_toast("first", ToastSeverity::Info);
+            app.add_toast("second", ToastSeverity::Warning);
+            app.add_toast("third", ToastSeverity::Success);
+            app.add_toast("fourth", ToastSeverity::Error);
+
+            assert_eq!(app.toasts.len(), MAX_TOASTS);
+            assert_eq!(app.toasts[0].message, "second");
+            assert_eq!(app.toasts[1].message, "third");
+            assert_eq!(app.toasts[2].message, "fourth");
+        }
+
+        #[test]
+        fn toast_overflow_preserves_severity() {
+            let mut app = create_test_app();
+            app.add_toast("a", ToastSeverity::Info);
+            app.add_toast("b", ToastSeverity::Warning);
+            app.add_toast("c", ToastSeverity::Success);
+            app.add_toast("d", ToastSeverity::Error);
+
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Warning);
+            assert_eq!(app.toasts[1].severity, ToastSeverity::Success);
+            assert_eq!(app.toasts[2].severity, ToastSeverity::Error);
+        }
+
+        #[test]
+        fn toast_overflow_with_many_additions() {
+            let mut app = create_test_app();
+            for i in 0..10 {
+                app.add_toast(format!("msg-{i}"), ToastSeverity::Info);
+            }
+            assert_eq!(app.toasts.len(), MAX_TOASTS);
+            assert_eq!(app.toasts[0].message, "msg-7");
+            assert_eq!(app.toasts[1].message, "msg-8");
+            assert_eq!(app.toasts[2].message, "msg-9");
+        }
+
+        #[test]
+        fn convenience_methods_set_correct_severity() {
+            let mut app = create_test_app();
+            app.toast_info("info");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Info);
+
+            app.toasts.clear();
+            app.toast_success("success");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Success);
+
+            app.toasts.clear();
+            app.toast_warning("warning");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Warning);
+
+            app.toasts.clear();
+            app.toast_error("error");
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Error);
+        }
+    }
+
+    mod toast_expiration_tests {
+        use super::*;
+
+        #[test]
+        fn fresh_toasts_are_not_expired() {
+            let mut app = create_test_app();
+            app.add_toast("recent", ToastSeverity::Info);
+            app.expire_toasts();
+            assert_eq!(app.toasts.len(), 1);
+        }
+
+        #[test]
+        fn old_toasts_are_expired() {
+            let mut app = create_test_app();
+            app.toasts.push_back(Toast {
+                message: "old".into(),
+                severity: ToastSeverity::Info,
+                created_at: Instant::now() - TOAST_DURATION - Duration::from_millis(1),
+            });
+            app.expire_toasts();
+            assert!(app.toasts.is_empty());
+        }
+
+        #[test]
+        fn mixed_age_toasts_partial_expiry() {
+            let mut app = create_test_app();
+            app.toasts.push_back(Toast {
+                message: "old".into(),
+                severity: ToastSeverity::Warning,
+                created_at: Instant::now() - TOAST_DURATION - Duration::from_secs(1),
+            });
+            app.add_toast("new", ToastSeverity::Success);
+            assert_eq!(app.toasts.len(), 2);
+
+            app.expire_toasts();
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].message, "new");
+        }
+
+        #[test]
+        fn expire_all_when_all_old() {
+            let mut app = create_test_app();
+            let old_time = Instant::now() - TOAST_DURATION - Duration::from_secs(10);
+            for i in 0..MAX_TOASTS {
+                app.toasts.push_back(Toast {
+                    message: format!("old-{i}"),
+                    severity: ToastSeverity::Info,
+                    created_at: old_time,
+                });
+            }
+            app.expire_toasts();
+            assert!(app.toasts.is_empty());
+        }
+    }
+
+    mod connected_count_tests {
+        use super::*;
+
+        #[test]
+        fn initial_connected_count_is_zero() {
+            let app = create_test_app();
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn connect_increments_count() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn disconnect_decrements_count() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+            app.set_printer_connected(0, false);
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn double_connect_does_not_double_count() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+            app.set_printer_connected(0, true);
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn double_disconnect_does_not_underflow() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, false);
+            app.set_printer_connected(0, false);
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn out_of_bounds_index_is_ignored() {
+            let mut app = create_test_app();
+            app.set_printer_connected(99, true);
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn multi_printer_connected_count() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let p3 = Arc::new(Mutex::new(PrinterState::default()));
+            let mut app =
+                App::new_multi(vec![p1, p2, p3], NotificationConfig::default()).expect("new_multi");
+
+            app.set_printer_connected(0, true);
+            app.set_printer_connected(2, true);
+            assert_eq!(app.get_connected_count(), 2);
+
+            app.set_printer_connected(1, true);
+            assert_eq!(app.get_connected_count(), 3);
+
+            app.set_printer_connected(0, false);
+            assert_eq!(app.get_connected_count(), 2);
+        }
+    }
+
+    mod handle_mqtt_event_tests {
+        use super::*;
+
+        #[test]
+        fn connected_event_sets_connected_and_clears_error() {
+            let mut app = create_test_app();
+            app.set_printer_error(0, Some("old error".into()));
+
+            app.handle_mqtt_event(MqttEvent::Connected { printer_index: 0 });
+
+            assert!(app.is_printer_connected(0));
+            assert!(app.active_error_message().is_none());
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn disconnected_event_clears_connected() {
+            let mut app = create_test_app();
+            app.set_printer_connected(0, true);
+
+            app.handle_mqtt_event(MqttEvent::Disconnected { printer_index: 0 });
+
+            assert!(!app.is_printer_connected(0));
+            assert_eq!(app.get_connected_count(), 0);
+        }
+
+        #[test]
+        fn state_updated_event_records_time_and_marks_connected() {
+            let mut app = create_test_app();
+
+            app.handle_mqtt_event(MqttEvent::StateUpdated { printer_index: 0 });
+
+            assert!(app.is_printer_connected(0));
+            assert!(app.get_printer_last_update(0).is_some());
+            assert_eq!(app.get_connected_count(), 1);
+        }
+
+        #[test]
+        fn error_event_stores_message() {
+            let mut app = create_test_app();
+
+            app.handle_mqtt_event(MqttEvent::Error {
+                printer_index: 0,
+                message: "connection refused".into(),
+            });
+
+            assert_eq!(app.active_error_message(), Some("connection refused"));
+        }
+
+        #[test]
+        fn connected_then_error_then_connected_clears_error() {
+            let mut app = create_test_app();
+
+            app.handle_mqtt_event(MqttEvent::Connected { printer_index: 0 });
+            app.handle_mqtt_event(MqttEvent::Error {
+                printer_index: 0,
+                message: "timeout".into(),
+            });
+            assert_eq!(app.active_error_message(), Some("timeout"));
+
+            app.handle_mqtt_event(MqttEvent::Connected { printer_index: 0 });
+            assert!(app.active_error_message().is_none());
+        }
+    }
+
+    mod multi_printer_tests {
+        use super::*;
+
+        #[test]
+        fn new_multi_requires_at_least_one_printer() {
+            let result = App::new_multi(vec![], NotificationConfig::default());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn new_multi_single_printer_uses_single_view() {
+            let p = Arc::new(Mutex::new(PrinterState::default()));
+            let app = App::new_multi(vec![p], NotificationConfig::default()).expect("new_multi");
+            assert_eq!(app.view_mode, ViewMode::Single);
+        }
+
+        #[test]
+        fn new_multi_multiple_printers_uses_aggregate_view() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let app =
+                App::new_multi(vec![p1, p2], NotificationConfig::default()).expect("new_multi");
+            assert_eq!(app.view_mode, ViewMode::Aggregate);
+        }
+
+        #[test]
+        fn set_active_printer_within_bounds() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let mut app =
+                App::new_multi(vec![p1, p2], NotificationConfig::default()).expect("new_multi");
+
+            assert!(app.set_active_printer(1));
+            assert_eq!(app.active_printer_index(), 1);
+        }
+
+        #[test]
+        fn set_active_printer_out_of_bounds_returns_false() {
+            let p = Arc::new(Mutex::new(PrinterState::default()));
+            let mut app =
+                App::new_multi(vec![p], NotificationConfig::default()).expect("new_multi");
+
+            assert!(!app.set_active_printer(5));
+            assert_eq!(app.active_printer_index(), 0);
+        }
+
+        #[test]
+        fn printer_count_returns_correct_value() {
+            let p1 = Arc::new(Mutex::new(PrinterState::default()));
+            let p2 = Arc::new(Mutex::new(PrinterState::default()));
+            let p3 = Arc::new(Mutex::new(PrinterState::default()));
+            let app =
+                App::new_multi(vec![p1, p2, p3], NotificationConfig::default()).expect("new_multi");
+            assert_eq!(app.printer_count(), 3);
         }
     }
 }

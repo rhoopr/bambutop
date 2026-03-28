@@ -208,7 +208,7 @@ async fn run_main(
     }
 
     // Create app with all printer states
-    let mut app = App::new_multi(printer_states, config.notifications.clone());
+    let mut app = App::new_multi(printer_states, config.notifications.clone())?;
 
     // Request initial state and version info from all printers
     for client in &mqtt_clients {
@@ -238,7 +238,7 @@ async fn run_main(
 async fn run_demo() -> Result<()> {
     run_with_terminal(|mut terminal| async move {
         let printer_states = demo::create_demo_printers();
-        let mut app = App::new_multi(printer_states, config::NotificationConfig::default());
+        let mut app = App::new_multi(printer_states, config::NotificationConfig::default())?;
 
         for i in 0..app.printer_count() {
             app.set_printer_connected(i, true);
@@ -392,7 +392,7 @@ async fn run_app(
                         }
                         KeyCode::Char('l') => {
                             if let Some(client) = active_client(app, mqtt_clients) {
-                                let current = app.active_printer_state().lock().expect("state lock poisoned").lights.chamber_light;
+                                let current = app.active_printer_state().lock().unwrap_or_else(|e| e.into_inner()).lights.chamber_light;
                                 let new_state = !current;
                                 let status = if new_state { "ON" } else { "OFF" };
                                 if let Err(e) = client.set_chamber_light(new_state).await {
@@ -404,7 +404,7 @@ async fn run_app(
                         }
                         KeyCode::Char('w') => {
                             if let Some(client) = active_client(app, mqtt_clients) {
-                                let current = app.active_printer_state().lock().expect("state lock poisoned").lights.work_light;
+                                let current = app.active_printer_state().lock().unwrap_or_else(|e| e.into_inner()).lights.work_light;
                                 let new_state = !current;
                                 let status = if new_state { "ON" } else { "OFF" };
                                 if let Err(e) = client.set_work_light(new_state).await {
@@ -417,7 +417,7 @@ async fn run_app(
                         KeyCode::Char(' ') => {
                             if let Some(client) = active_client(app, mqtt_clients) {
                                 let (is_running, is_paused) = {
-                                    let state = app.active_printer_state().lock().expect("state lock poisoned");
+                                    let state = app.active_printer_state().lock().unwrap_or_else(|e| e.into_inner());
                                     let gcode = state.print_status.gcode_state;
                                     (gcode == GcodeState::Running, gcode == GcodeState::Pause)
                                 };
@@ -445,7 +445,7 @@ async fn run_app(
                         KeyCode::Char('c') => {
                             if let Some(client) = active_client(app, mqtt_clients) {
                                 let has_active_job = {
-                                    let state = app.active_printer_state().lock().expect("state lock poisoned");
+                                    let state = app.active_printer_state().lock().unwrap_or_else(|e| e.into_inner());
                                     matches!(state.print_status.gcode_state, GcodeState::Running | GcodeState::Pause)
                                 };
                                 if has_active_job {

@@ -1202,6 +1202,8 @@ impl PrinterState {
                                 .map(|t| {
                                     let color_str = t.tray_color.as_deref().unwrap_or_default();
                                     AmsTray {
+                                        // Printer occasionally sends non-numeric strings;
+                                        // default to 0 which is safe for display purposes
                                         id: t.id.parse().unwrap_or(0),
                                         material: t.tray_type.clone().unwrap_or_default(),
                                         remaining: t.remain.unwrap_or(0).max(0) as u8,
@@ -1230,6 +1232,8 @@ impl PrinterState {
                     let is_lite = trays.len() <= 2 && !trays.is_empty();
 
                     AmsUnit {
+                        // Printer occasionally sends non-numeric strings;
+                        // defaults are safe for display purposes
                         id: u.id.parse().unwrap_or(0),
                         humidity: u.humidity.parse().unwrap_or(0),
                         trays,

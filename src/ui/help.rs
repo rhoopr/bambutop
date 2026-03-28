@@ -223,3 +223,161 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod centered_rect_tests {
+        use super::*;
+
+        #[test]
+        fn centers_horizontally_and_vertically() {
+            let area = Rect::new(0, 0, 100, 50);
+            let result = centered_rect(40, 20, area);
+            assert_eq!(result.x, 30);
+            assert_eq!(result.y, 15);
+            assert_eq!(result.width, 40);
+            assert_eq!(result.height, 20);
+        }
+
+        #[test]
+        fn clamps_when_overlay_wider_than_area() {
+            let area = Rect::new(0, 0, 30, 50);
+            let result = centered_rect(40, 20, area);
+            assert_eq!(result.x, 0);
+            assert_eq!(result.width, 30);
+        }
+
+        #[test]
+        fn clamps_when_overlay_taller_than_area() {
+            let area = Rect::new(0, 0, 100, 10);
+            let result = centered_rect(40, 20, area);
+            assert_eq!(result.y, 0);
+            assert_eq!(result.height, 10);
+        }
+
+        #[test]
+        fn respects_area_offset() {
+            let area = Rect::new(10, 5, 100, 50);
+            let result = centered_rect(40, 20, area);
+            assert_eq!(result.x, 10 + 30);
+            assert_eq!(result.y, 5 + 15);
+        }
+
+        #[test]
+        fn zero_size_area() {
+            let area = Rect::new(0, 0, 0, 0);
+            let result = centered_rect(40, 20, area);
+            assert_eq!(result.width, 0);
+            assert_eq!(result.height, 0);
+        }
+
+        #[test]
+        fn exact_fit() {
+            let area = Rect::new(0, 0, 42, 30);
+            let result = centered_rect(42, 30, area);
+            assert_eq!(result.x, 0);
+            assert_eq!(result.y, 0);
+            assert_eq!(result.width, 42);
+            assert_eq!(result.height, 30);
+        }
+    }
+
+    mod shortcut_data_tests {
+        use super::*;
+
+        #[test]
+        fn nav_shortcuts_are_not_empty() {
+            assert!(!NAV_SHORTCUTS.is_empty());
+        }
+
+        #[test]
+        fn control_shortcuts_are_not_empty() {
+            assert!(!CONTROL_SHORTCUTS.is_empty());
+        }
+
+        #[test]
+        fn indicators_are_not_empty() {
+            assert!(!INDICATORS.is_empty());
+        }
+
+        #[test]
+        fn all_nav_shortcuts_have_content() {
+            for s in NAV_SHORTCUTS {
+                assert!(!s.key.is_empty(), "Shortcut key should not be empty");
+                assert!(
+                    !s.description.is_empty(),
+                    "Shortcut description should not be empty"
+                );
+            }
+        }
+
+        #[test]
+        fn all_control_shortcuts_have_content() {
+            for s in CONTROL_SHORTCUTS {
+                assert!(!s.key.is_empty());
+                assert!(!s.description.is_empty());
+            }
+        }
+
+        #[test]
+        fn all_indicators_have_content() {
+            for i in INDICATORS {
+                assert!(!i.label.is_empty());
+                assert!(!i.description.is_empty());
+            }
+        }
+
+        #[test]
+        fn overlay_width_is_reasonable() {
+            let w = OVERLAY_WIDTH;
+            assert!(w > 20, "overlay too narrow: {w}");
+            assert!(w < 100, "overlay too wide: {w}");
+        }
+    }
+
+    mod line_builder_tests {
+        use super::*;
+
+        #[test]
+        fn section_title_has_bold_cyan_text() {
+            let line = section_title("Test Section");
+            let spans: Vec<_> = line.spans.iter().collect();
+            // First span is left padding
+            assert_eq!(spans[0].content, LEFT_PAD);
+            // Second span is the title
+            assert_eq!(spans[1].content, "Test Section");
+            assert_eq!(spans[1].style.fg, Some(Color::Cyan));
+            assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+        }
+
+        #[test]
+        fn shortcut_line_has_yellow_key_and_white_desc() {
+            let s = Shortcut {
+                key: "q",
+                description: "Quit",
+            };
+            let line = shortcut_line(&s);
+            let spans: Vec<_> = line.spans.iter().collect();
+            // Pad, key, space, description
+            assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+            assert!(spans[1].content.contains('q'));
+            assert_eq!(spans[3].content, "Quit");
+            assert_eq!(spans[3].style.fg, Some(Color::White));
+        }
+
+        #[test]
+        fn indicator_line_has_green_label() {
+            let i = Indicator {
+                label: "AI",
+                description: "Spaghetti detection",
+            };
+            let line = indicator_line(&i);
+            let spans: Vec<_> = line.spans.iter().collect();
+            assert_eq!(spans[1].style.fg, Some(Color::Green));
+            assert!(spans[1].content.contains("AI"));
+            assert_eq!(spans[3].content, "Spaghetti detection");
+        }
+    }
+}
