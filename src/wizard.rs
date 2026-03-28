@@ -70,7 +70,10 @@ pub fn run_setup_wizard() -> Result<Config> {
     }];
     printers.extend(extra_printers);
 
-    let config = Config { printers };
+    let config = Config {
+        printers,
+        ..Config::default()
+    };
 
     config.save()?;
 

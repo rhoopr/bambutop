@@ -51,6 +51,14 @@ const NAV_SHORTCUTS: &[Shortcut] = &[
         key: "r",
         description: "Refresh all printers",
     },
+    Shortcut {
+        key: "e",
+        description: "Toggle error notifications",
+    },
+    Shortcut {
+        key: "n",
+        description: "Toggle completion notifications",
+    },
 ];
 
 /// Printer control shortcuts (require unlock with x)

@@ -4,9 +4,10 @@
 //! printer data, and UI preferences. It serves as the central state container
 //! that bridges MQTT events with the terminal UI.
 
+use crate::config::NotificationConfig;
 use crate::mqtt::{MqttEvent, SharedPrinterState};
-use crate::printer::PrinterState;
-use std::collections::VecDeque;
+use crate::printer::{GcodeState, PrinterState};
+use std::collections::{HashSet, VecDeque};
 #[cfg(test)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -102,6 +103,8 @@ pub struct App {
     cached_snapshots: Vec<PrinterState>,
     /// Dirty flags for each printer snapshot (set on StateUpdated, cleared by refresh).
     snapshot_dirty: Vec<bool>,
+    /// Desktop notification preferences (toggleable at runtime).
+    pub notifications: NotificationConfig,
 }
 
 impl App {
@@ -136,6 +139,7 @@ impl App {
             view_mode: ViewMode::Single,
             cached_snapshots: vec![initial_snapshot],
             snapshot_dirty: vec![true],
+            notifications: NotificationConfig::default(),
         }
     }
 
@@ -143,7 +147,7 @@ impl App {
     ///
     /// The first printer in the list becomes the active printer.
     /// Panics if the printers vector is empty.
-    pub fn new_multi(printers: Vec<SharedPrinterState>) -> Self {
+    pub fn new_multi(printers: Vec<SharedPrinterState>, notifications: NotificationConfig) -> Self {
         assert!(!printers.is_empty(), "At least one printer is required");
 
         let printer_count = printers.len();
@@ -182,6 +186,7 @@ impl App {
             view_mode,
             cached_snapshots,
             snapshot_dirty: vec![true; printer_count],
+            notifications,
         }
     }
 
@@ -236,8 +241,6 @@ impl App {
     /// - Increments when changing from disconnected to connected
     /// - Decrements when changing from connected to disconnected
     /// - No change if the state is already the target value
-    ///
-    /// Also updates the legacy `connected` field if this is the active printer.
     pub fn set_printer_connected(&mut self, index: usize, connected: bool) {
         if let Some(conn) = self.printer_connections.get_mut(index) {
             let was_connected = *conn;
@@ -253,8 +256,6 @@ impl App {
     }
 
     /// Updates the last update timestamp for a specific printer.
-    ///
-    /// Also updates the legacy `last_update` field if this is the active printer.
     pub fn set_printer_last_update(&mut self, index: usize, timestamp: Option<Instant>) {
         if let Some(last_update) = self.printer_last_updates.get_mut(index) {
             *last_update = timestamp;
@@ -316,6 +317,8 @@ impl App {
                 self.set_printer_connected(printer_index, false);
             }
             MqttEvent::StateUpdated { printer_index } => {
+                // Check for notification-worthy transitions before marking dirty
+                self.check_state_notifications(printer_index);
                 // State is updated via shared reference, just record the time
                 self.set_printer_last_update(printer_index, Some(Instant::now()));
                 self.set_printer_connected(printer_index, true);
@@ -334,8 +337,6 @@ impl App {
     }
 
     /// Sets the error message for a specific printer.
-    ///
-    /// Also updates the legacy `error_message` field if this is the active printer.
     fn set_printer_error(&mut self, index: usize, error: Option<String>) {
         if let Some(err_slot) = self.printer_error_messages.get_mut(index) {
             *err_slot = error;
@@ -464,6 +465,104 @@ impl App {
         self.toasts
             .retain(|toast| toast.created_at.elapsed() < TOAST_DURATION);
     }
+
+    /// Checks for state transitions that should trigger notifications.
+    ///
+    /// Compares the cached snapshot (previous state) with the current shared state
+    /// to detect GcodeState transitions and new HMS errors. Must be called BEFORE
+    /// marking the snapshot dirty so the cached snapshot still holds the old state.
+    fn check_state_notifications(&mut self, printer_index: usize) {
+        // Extract old state (cheap copies only, no heap allocation)
+        let (old_gcode, old_hms_received) = match self.cached_snapshots.get(printer_index) {
+            Some(s) => (s.print_status.gcode_state, s.hms_received),
+            None => return,
+        };
+
+        // Early exit: nothing to detect on initial connection with no HMS data
+        if old_gcode == GcodeState::Unknown && !old_hms_received {
+            return;
+        }
+
+        let shared = match self.printers.get(printer_index) {
+            Some(p) => p,
+            None => return,
+        };
+        let state = shared.lock().expect("state lock poisoned");
+        let new_gcode = state.print_status.gcode_state;
+
+        // Detect transitions
+        let is_completion = old_gcode != GcodeState::Unknown
+            && new_gcode == GcodeState::Finish
+            && old_gcode != GcodeState::Finish;
+        let is_failure = old_gcode != GcodeState::Unknown
+            && new_gcode == GcodeState::Failed
+            && old_gcode != GcodeState::Failed;
+
+        // Find new HMS error messages (only allocate when there are actually new codes)
+        let new_hms_messages: Vec<String> = if old_hms_received {
+            let old_codes: HashSet<u32> = self.cached_snapshots[printer_index]
+                .hms_errors
+                .iter()
+                .map(|e| e.code)
+                .collect();
+            state
+                .hms_errors
+                .iter()
+                .filter(|e| !old_codes.contains(&e.code))
+                .map(|e| e.message.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Early exit if no notifications needed (avoids name/failure string allocs)
+        if !is_completion && !is_failure && new_hms_messages.is_empty() {
+            return;
+        }
+
+        // Allocate strings only when we know a notification will fire
+        let printer_name = if state.printer_name.is_empty() {
+            format!("Printer {}", printer_index + 1)
+        } else {
+            state.printer_name.clone()
+        };
+        let failure_desc = if is_failure {
+            state
+                .print_status
+                .failure_description()
+                .map(|c| c.into_owned())
+        } else {
+            None
+        };
+        drop(state);
+
+        if is_completion {
+            let msg = format!("{printer_name}: Print complete!");
+            self.add_toast(&msg, ToastSeverity::Success);
+            if self.notifications.completions {
+                crate::notifications::send("Print Complete", &msg);
+            }
+        }
+
+        if is_failure {
+            let msg = match &failure_desc {
+                Some(desc) => format!("{printer_name}: Print failed — {desc}"),
+                None => format!("{printer_name}: Print failed"),
+            };
+            self.add_toast(&msg, ToastSeverity::Error);
+            if self.notifications.errors {
+                crate::notifications::send("Print Failed", &msg);
+            }
+        }
+
+        for message in &new_hms_messages {
+            let msg = format!("{printer_name}: {message}");
+            self.add_toast(&msg, ToastSeverity::Warning);
+            if self.notifications.errors {
+                crate::notifications::send("HMS Alert", &msg);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -549,6 +648,100 @@ mod tests {
                 Some(Instant::now() - STALE_CONNECTION_THRESHOLD + Duration::from_millis(100)),
             );
             assert!(!app.is_connection_stale());
+        }
+    }
+
+    mod notification_tests {
+        use super::*;
+        use crate::printer::HmsError;
+        use std::borrow::Cow;
+
+        fn make_hms_error(code: u32, message: &'static str) -> HmsError {
+            HmsError {
+                code,
+                module: 0,
+                severity: 0,
+                message: Cow::Borrowed(message),
+                received_at: Instant::now(),
+            }
+        }
+
+        fn app_with_running_print() -> App {
+            let mut app = create_test_app();
+            app.cached_snapshots[0].print_status.gcode_state = GcodeState::Running;
+            app
+        }
+
+        #[test]
+        fn print_completion_generates_success_toast() {
+            let mut app = app_with_running_print();
+            app.printers[0]
+                .lock()
+                .expect("lock")
+                .print_status
+                .gcode_state = GcodeState::Finish;
+            app.check_state_notifications(0);
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Success);
+            assert!(app.toasts[0].message.contains("Print complete"));
+        }
+
+        #[test]
+        fn print_failure_generates_error_toast() {
+            let mut app = app_with_running_print();
+            app.printers[0]
+                .lock()
+                .expect("lock")
+                .print_status
+                .gcode_state = GcodeState::Failed;
+            app.check_state_notifications(0);
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Error);
+            assert!(app.toasts[0].message.contains("Print failed"));
+        }
+
+        #[test]
+        fn no_toast_on_initial_connection() {
+            let mut app = create_test_app();
+            app.printers[0]
+                .lock()
+                .expect("lock")
+                .print_status
+                .gcode_state = GcodeState::Finish;
+            app.check_state_notifications(0);
+            assert!(app.toasts.is_empty());
+        }
+
+        #[test]
+        fn new_hms_error_generates_warning_toast() {
+            let mut app = create_test_app();
+            app.cached_snapshots[0].hms_received = true;
+            app.printers[0].lock().expect("lock").hms_errors =
+                vec![make_hms_error(0x0500_0200, "Filament may be tangled")];
+            app.check_state_notifications(0);
+            assert_eq!(app.toasts.len(), 1);
+            assert_eq!(app.toasts[0].severity, ToastSeverity::Warning);
+            assert!(app.toasts[0].message.contains("Filament may be tangled"));
+        }
+
+        #[test]
+        fn existing_hms_error_does_not_re_notify() {
+            let mut app = create_test_app();
+            let error = make_hms_error(0x0500_0200, "Filament may be tangled");
+            app.cached_snapshots[0].hms_received = true;
+            app.cached_snapshots[0].hms_errors = vec![error.clone()];
+            app.printers[0].lock().expect("lock").hms_errors = vec![error];
+            app.check_state_notifications(0);
+            assert!(app.toasts.is_empty());
+        }
+
+        #[test]
+        fn no_hms_toast_before_first_hms_report() {
+            let mut app = create_test_app();
+            app.printers[0].lock().expect("lock").hms_errors =
+                vec![make_hms_error(0x0700_0100, "AMS warning")];
+            app.check_state_notifications(0);
+            assert!(app.toasts.is_empty());
         }
     }
 }

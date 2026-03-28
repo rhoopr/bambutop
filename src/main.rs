@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod demo;
 mod mqtt;
+mod notifications;
 mod printer;
 mod ui;
 mod wizard;
@@ -141,6 +142,7 @@ async fn main() -> Result<()> {
                 access_code: access_code.clone(),
                 port: config::DEFAULT_MQTT_PORT,
             }],
+            ..config::Config::default()
         };
         config.save().context("failed to save config")?;
         config
@@ -206,7 +208,7 @@ async fn run_main(
     }
 
     // Create app with all printer states
-    let mut app = App::new_multi(printer_states);
+    let mut app = App::new_multi(printer_states, config.notifications.clone());
 
     // Request initial state and version info from all printers
     for client in &mqtt_clients {
@@ -236,7 +238,7 @@ async fn run_main(
 async fn run_demo() -> Result<()> {
     run_with_terminal(|mut terminal| async move {
         let printer_states = demo::create_demo_printers();
-        let mut app = App::new_multi(printer_states);
+        let mut app = App::new_multi(printer_states, config::NotificationConfig::default());
 
         for i in 0..app.printer_count() {
             app.set_printer_connected(i, true);
@@ -367,6 +369,16 @@ async fn run_app(
                                 "Fahrenheit"
                             };
                             app.toast_info(format!("Temperature: {unit}"));
+                        }
+                        KeyCode::Char('e') => {
+                            app.notifications.errors = !app.notifications.errors;
+                            let state = if app.notifications.errors { "ON" } else { "OFF" };
+                            app.toast_info(format!("Error notifications: {state}"));
+                        }
+                        KeyCode::Char('n') => {
+                            app.notifications.completions = !app.notifications.completions;
+                            let state = if app.notifications.completions { "ON" } else { "OFF" };
+                            app.toast_info(format!("Completion notifications: {state}"));
                         }
                         KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') => {
                             if let Some(client) = active_client(app, mqtt_clients) {

@@ -31,6 +31,9 @@ clap = { version = "4", default-features = false, features = ["derive", "std", "
 # System
 libc = "0.2"
 
+# Desktop notifications
+notify-rust = "4"
+
 # Error handling
 anyhow = "1"
 

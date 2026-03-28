@@ -31,6 +31,28 @@ use std::path::PathBuf;
 /// Default MQTT port for Bambu printers (TLS)
 pub const DEFAULT_MQTT_PORT: u16 = 8883;
 
+/// Desktop notification settings.
+///
+/// Controls which events trigger system notifications.
+/// Both default to `true` when absent from the config file.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NotificationConfig {
+    /// Notify on print failures and new HMS errors.
+    pub errors: bool,
+    /// Notify on print completions.
+    pub completions: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            errors: true,
+            completions: true,
+        }
+    }
+}
+
 /// Application configuration stored in `~/.config/bambutop/config.toml`.
 ///
 /// Loads both the `[[printers]]` array format and legacy `[printer]` section.
@@ -40,6 +62,8 @@ pub const DEFAULT_MQTT_PORT: u16 = 8883;
 pub struct Config {
     /// All configured printers in deterministic order.
     pub printers: Vec<PrinterConfig>,
+    /// Desktop notification preferences.
+    pub notifications: NotificationConfig,
 }
 
 /// Raw configuration format for deserializing config files.
@@ -51,11 +75,15 @@ struct RawConfig {
     /// New multi-printer array (optional when using legacy format).
     #[serde(default)]
     printers: Vec<PrinterConfig>,
+    /// Desktop notification preferences.
+    #[serde(default)]
+    notifications: NotificationConfig,
 }
 
 /// Serialization format for saving configs in the new multi-printer format.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct SaveConfig {
+    notifications: NotificationConfig,
     printers: Vec<PrinterConfig>,
 }
 
@@ -147,7 +175,10 @@ impl Config {
             "Config must have at least one printer"
         );
 
-        Ok(Config { printers })
+        Ok(Config {
+            printers,
+            notifications: raw.notifications,
+        })
     }
 
     /// Saves the configuration to the config file.
@@ -165,6 +196,7 @@ impl Config {
 
         // Serialize using the multi-printer format
         let save_config = SaveConfig {
+            notifications: self.notifications.clone(),
             printers: self.printers.clone(),
         };
         let content =
@@ -299,10 +331,12 @@ access_code = "12345678"
                 access_code: "12345678".to_string(),
                 port: DEFAULT_MQTT_PORT,
             }],
+            ..Config::default()
         };
 
         let save_config = SaveConfig {
             printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -334,10 +368,12 @@ access_code = "12345678"
                     port: DEFAULT_MQTT_PORT,
                 },
             ],
+            ..Config::default()
         };
 
         let save_config = SaveConfig {
             printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -359,10 +395,12 @@ access_code = "12345678"
                 access_code: "12345678".to_string(),
                 port: DEFAULT_MQTT_PORT,
             }],
+            ..Config::default()
         };
 
         let save_config = SaveConfig {
             printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -382,6 +420,7 @@ access_code = "12345678"
                 access_code: "CODE".to_string(),
                 port: DEFAULT_MQTT_PORT,
             }],
+            ..Config::default()
         };
 
         assert_eq!(config.printers.len(), 1);
@@ -403,6 +442,7 @@ access_code = "12345678"
         // Serialize to new format
         let save_config = SaveConfig {
             printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let new_content = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 
@@ -471,6 +511,7 @@ access_code = "12345678"
                 access_code: "CODE".to_string(),
                 port: DEFAULT_MQTT_PORT,
             }],
+            ..Config::default()
         };
 
         // Mutable field access should work (backwards compatibility)
@@ -558,6 +599,7 @@ access_code = "444"
         // Serialize to new format (simulating a save)
         let save_config = SaveConfig {
             printers: config.printers.clone(),
+            ..SaveConfig::default()
         };
         let serialized = toml::to_string_pretty(&save_config).expect("Failed to serialize");
 

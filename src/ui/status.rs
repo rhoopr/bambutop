@@ -4,6 +4,7 @@
 //! and humidity levels for connected AMS units. Highlights the currently
 //! active filament slot.
 
+use super::common::celsius_to_fahrenheit;
 use crate::printer::PrinterState;
 use ratatui::{
     layout::Rect,
@@ -67,7 +68,7 @@ pub fn panel_height(printer_state: &PrinterState) -> u16 {
 }
 
 /// Renders the AMS (Automatic Material System) status panel.
-pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
+pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, use_celsius: bool, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Blue))
@@ -230,7 +231,13 @@ pub fn render_ams(frame: &mut Frame, printer_state: &PrinterState, area: Rect) {
 
                 let temp_range_text = match (tray.nozzle_temp_min, tray.nozzle_temp_max) {
                     (Some(min), Some(max)) if min > 0 && max > 0 => {
-                        format!(" ({min}-{max}°C)")
+                        if use_celsius {
+                            format!(" ({min}-{max}°C)")
+                        } else {
+                            let min_f = celsius_to_fahrenheit(min as f32);
+                            let max_f = celsius_to_fahrenheit(max as f32);
+                            format!(" ({min_f:.0}-{max_f:.0}°F)")
+                        }
                     }
                     _ => String::new(),
                 };

@@ -324,3 +324,123 @@ fn get_status_text(state: &PrinterState, is_connected: bool) -> &'static str {
 
     gcode_state_to_status(state.print_status.gcode_state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::printer::GcodeState;
+
+    mod calculate_cards_per_row_tests {
+        use super::*;
+
+        #[test]
+        fn single_printer_always_one_column() {
+            assert_eq!(calculate_cards_per_row(100, 1), 1);
+            assert_eq!(calculate_cards_per_row(200, 1), 1);
+        }
+
+        #[test]
+        fn narrow_terminal_forces_single_column() {
+            assert_eq!(calculate_cards_per_row(30, 4), 1);
+        }
+
+        #[test]
+        fn wide_terminal_uses_multiple_columns() {
+            assert_eq!(calculate_cards_per_row(90, 4), 3);
+        }
+
+        #[test]
+        fn respects_max_cards_limit() {
+            assert_eq!(calculate_cards_per_row(200, 10), MAX_CARDS_PER_ROW);
+        }
+
+        #[test]
+        fn clamps_to_printer_count() {
+            assert_eq!(calculate_cards_per_row(200, 2), 2);
+        }
+
+        #[test]
+        fn zero_width_returns_one() {
+            assert_eq!(calculate_cards_per_row(0, 3), 1);
+        }
+    }
+
+    mod wifi_indicator_tests {
+        use super::*;
+
+        #[test]
+        fn empty_signal_returns_dashes() {
+            let (color, bars) = wifi_indicator("");
+            assert_eq!(color, Color::DarkGray);
+            assert_eq!(bars, "--");
+        }
+
+        #[test]
+        fn strong_signal() {
+            let (color, _) = wifi_indicator("-42dBm");
+            assert_eq!(color, Color::Green);
+        }
+
+        #[test]
+        fn medium_signal() {
+            let (color, _) = wifi_indicator("-60dBm");
+            assert_eq!(color, Color::Yellow);
+        }
+
+        #[test]
+        fn weak_signal() {
+            let (color, _) = wifi_indicator("-80dBm");
+            assert_eq!(color, Color::Red);
+        }
+
+        #[test]
+        fn threshold_boundary_strong() {
+            let (color, _) = wifi_indicator("-50dBm");
+            assert_eq!(color, Color::Yellow);
+        }
+
+        #[test]
+        fn threshold_boundary_medium() {
+            let (color, _) = wifi_indicator("-70dBm");
+            assert_eq!(color, Color::Red);
+        }
+    }
+
+    mod get_status_text_tests {
+        use super::*;
+
+        #[test]
+        fn disconnected() {
+            let state = PrinterState::default();
+            assert_eq!(get_status_text(&state, false), "Disconnected");
+        }
+
+        #[test]
+        fn connected_idle() {
+            let mut state = PrinterState::default();
+            state.print_status.gcode_state = GcodeState::Idle;
+            assert_eq!(get_status_text(&state, true), "Idle");
+        }
+
+        #[test]
+        fn connected_printing() {
+            let mut state = PrinterState::default();
+            state.print_status.gcode_state = GcodeState::Running;
+            assert_eq!(get_status_text(&state, true), "Printing");
+        }
+
+        #[test]
+        fn connected_paused() {
+            let mut state = PrinterState::default();
+            state.print_status.gcode_state = GcodeState::Pause;
+            assert_eq!(get_status_text(&state, true), "Paused");
+        }
+
+        #[test]
+        fn connected_failed() {
+            let mut state = PrinterState::default();
+            state.print_status.gcode_state = GcodeState::Failed;
+            assert_eq!(get_status_text(&state, true), "Failed");
+        }
+    }
+}
