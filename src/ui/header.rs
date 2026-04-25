@@ -8,7 +8,7 @@ use super::common::{
     WIFI_MEDIUM_THRESHOLD, WIFI_STRONG_THRESHOLD,
 };
 use crate::app::App;
-use crate::printer::PrinterState;
+use crate::printer::{PrinterState, MODEL_UNKNOWN};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -52,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: 
         Cow::Borrowed(printer_state.printer_name.as_str())
     } else {
         let model = if printer_state.printer_model.is_empty() {
-            "Bambu Printer"
+            MODEL_UNKNOWN
         } else {
             &printer_state.printer_model
         };

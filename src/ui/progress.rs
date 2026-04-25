@@ -152,6 +152,10 @@ pub fn render(
                     None
                 }
             })
+            .or_else(|| {
+                derive_elapsed_mins(print_status.progress, print_status.remaining_time_mins)
+                    .map(|m| Cow::Owned(format!("~{}", format_time(m))))
+            })
             .unwrap_or(Cow::Borrowed("--:--"));
 
         let remaining_display: Cow<'_, str> = if print_status.remaining_time_mins == 0 {
@@ -400,6 +404,20 @@ fn format_eta_clock(remaining_mins: u32, timezone_offset_secs: i32) -> Cow<'stat
     Cow::Owned(format!("{hour_12}:{minute:02} {am_pm}"))
 }
 
+/// Derives elapsed print time from progress percentage and remaining minutes.
+///
+/// Uses the identity: elapsed / remaining = progress / (100 - progress).
+/// Returns `None` when progress is 0, 100, or remaining is 0 (indeterminate).
+fn derive_elapsed_mins(progress_pct: u8, remaining_mins: u32) -> Option<u32> {
+    let progress = u32::from(progress_pct);
+    let pct_left = 100u32.checked_sub(progress).filter(|&n| n > 0)?;
+    if remaining_mins > 0 && progress > 0 {
+        Some(remaining_mins * progress / pct_left)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +601,37 @@ mod tests {
                 "Hour {} is not in valid 12-hour range (1-12)",
                 hour
             );
+        }
+    }
+
+    mod derive_elapsed_mins_tests {
+        use super::*;
+
+        #[test]
+        fn computes_at_halfway() {
+            // 50% done, 30 min left → elapsed = 30 * 50 / 50 = 30
+            assert_eq!(derive_elapsed_mins(50, 30), Some(30));
+        }
+
+        #[test]
+        fn computes_at_75_percent() {
+            // 75% done, 10 min left → elapsed = 10 * 75 / 25 = 30
+            assert_eq!(derive_elapsed_mins(75, 10), Some(30));
+        }
+
+        #[test]
+        fn returns_none_at_zero_progress() {
+            assert_eq!(derive_elapsed_mins(0, 60), None);
+        }
+
+        #[test]
+        fn returns_none_at_100_percent() {
+            assert_eq!(derive_elapsed_mins(100, 0), None);
+        }
+
+        #[test]
+        fn returns_none_when_remaining_is_zero() {
+            assert_eq!(derive_elapsed_mins(50, 0), None);
         }
     }
 }
