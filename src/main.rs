@@ -485,11 +485,12 @@ async fn run_app(
                             }
                         }
                         // Return to aggregate view
-                        KeyCode::Char('a') => {
-                            if app.printer_count() > 1 && app.view_mode == ViewMode::Single {
-                                app.view_mode = ViewMode::Aggregate;
-                                app.toast_info("Overview");
-                            }
+                        KeyCode::Char('a')
+                            if app.printer_count() > 1
+                                && app.view_mode == ViewMode::Single =>
+                        {
+                            app.view_mode = ViewMode::Aggregate;
+                            app.toast_info("Overview");
                         }
                         // Multi-printer navigation: Tab cycles to next printer
                         KeyCode::Tab => {
