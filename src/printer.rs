@@ -1008,10 +1008,11 @@ impl PrinterState {
             }
         }
 
-        // Gcode start time (can be number or string)
+        // Gcode start time (can be integer, float, or string depending on firmware)
         if let Some(v) = &report.gcode_start_time {
             let ts = v
                 .as_u64()
+                .or_else(|| v.as_f64().map(|f| f as u64))
                 .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()));
             if let Some(ts) = ts {
                 if ts > 0 {
@@ -1079,6 +1080,12 @@ impl PrinterState {
                 })
             };
         }
+
+        // Printing and upgrading are mutually exclusive; clear any stale upgrade state
+        // regardless of message ordering (upgrade_state and gcode_state may arrive together)
+        if self.print_status.is_active() {
+            self.upgrade_state = None;
+        }
     }
 
     /// Set model and serial suffix from serial number.
@@ -1123,9 +1130,13 @@ impl PrinterState {
         model_has_chamber(&self.printer_model)
     }
 
-    /// Returns true if the printer has reported heatbreak fan speed data.
+    /// Returns true if the printer has a heatbreak fan.
+    ///
+    /// Uses model-based detection to suppress false positives: P1S/P1P/A1 series
+    /// firmware reports `heatbreak_fan_speed` in MQTT even though no physical fan exists.
     pub fn has_heatbreak_fan(&self) -> bool {
-        self.received.has(ReceivedFields::HEATBREAK_FAN)
+        model_has_heatbreak_fan(&self.printer_model)
+            && self.received.has(ReceivedFields::HEATBREAK_FAN)
     }
 
     /// Returns true if the printer has reported xcam (AI monitoring) data.
@@ -1334,32 +1345,39 @@ fn format_hms_code(code: u32) -> Cow<'static, str> {
     }
 }
 
+pub(crate) const MODEL_P1S: &str = "Bambu Lab P1S";
+pub(crate) const MODEL_P1P: &str = "Bambu Lab P1P";
+pub(crate) const MODEL_P2S: &str = "Bambu Lab P2S";
+pub(crate) const MODEL_X1C: &str = "Bambu Lab X1C";
+pub(crate) const MODEL_X1E: &str = "Bambu Lab X1E";
+pub(crate) const MODEL_A1_MINI: &str = "Bambu Lab A1 Mini";
+pub(crate) const MODEL_A1: &str = "Bambu Lab A1";
+pub(crate) const MODEL_H2C: &str = "Bambu Lab H2C";
+pub(crate) const MODEL_H2S: &str = "Bambu Lab H2S";
+pub(crate) const MODEL_H2D: &str = "Bambu Lab H2D";
+pub(crate) const MODEL_H2D_PRO: &str = "Bambu Lab H2D Pro";
+pub(crate) const MODEL_UNKNOWN: &str = "Bambu Printer";
+
 fn model_from_serial(serial: &str) -> &'static str {
-    // Bambu serial number prefixes indicate model
-    // Format: XXYYYZZ... where XX indicates model
     if serial.len() < 3 {
-        return "Bambu Printer";
+        return MODEL_UNKNOWN;
     }
 
     // Prefixes from: https://wiki.bambulab.com/en/general/find-sn
     // Note: 01P/01S are counterintuitively swapped (01P=P1S, 01S=P1P)
     match &serial[..3] {
-        // P1 Series
-        "01P" => "Bambu Lab P1S",
-        "01S" => "Bambu Lab P1P",
-        "22E" => "Bambu Lab P2S",
-        // X1 Series
-        "00M" => "Bambu Lab X1C",
-        "03W" => "Bambu Lab X1E",
-        // A1 Series
-        "030" => "Bambu Lab A1 Mini",
-        "039" => "Bambu Lab A1",
-        // H2 Series
-        "31B" => "Bambu Lab H2C",
-        "093" => "Bambu Lab H2S",
-        "094" => "Bambu Lab H2D",
-        "239" => "Bambu Lab H2D Pro",
-        _ => "Bambu Printer",
+        "01P" => MODEL_P1S,
+        "01S" => MODEL_P1P,
+        "22E" => MODEL_P2S,
+        "00M" => MODEL_X1C,
+        "03W" => MODEL_X1E,
+        "030" => MODEL_A1_MINI,
+        "039" => MODEL_A1,
+        "31B" => MODEL_H2C,
+        "093" => MODEL_H2S,
+        "094" => MODEL_H2D,
+        "239" => MODEL_H2D_PRO,
+        _ => MODEL_UNKNOWN,
     }
 }
 
@@ -1375,14 +1393,18 @@ fn model_from_serial(serial: &str) -> &'static str {
 fn model_has_chamber(model: &str) -> bool {
     matches!(
         model,
-        "Bambu Lab X1C"
-            | "Bambu Lab X1E"
-            | "Bambu Lab P2S"
-            | "Bambu Lab H2C"
-            | "Bambu Lab H2S"
-            | "Bambu Lab H2D"
-            | "Bambu Lab H2D Pro"
+        MODEL_X1C | MODEL_X1E | MODEL_P2S | MODEL_H2C | MODEL_H2S | MODEL_H2D | MODEL_H2D_PRO
     )
+}
+
+/// Returns true if the printer model has a physical heatbreak fan.
+///
+/// P1S/P1P and A1 series firmware reports `heatbreak_fan_speed` over MQTT
+/// even though no such fan exists in the hardware — guard against that noise.
+/// Fails open (returns true) for unknown models so MQTT-reported data still
+/// renders; add new fanless models to the denylist as they are confirmed.
+fn model_has_heatbreak_fan(model: &str) -> bool {
+    !matches!(model, MODEL_P1S | MODEL_P1P | MODEL_A1 | MODEL_A1_MINI)
 }
 
 #[cfg(test)]
@@ -2460,6 +2482,12 @@ mod tests {
         }
 
         #[test]
+        fn parses_gcode_start_time_as_float() {
+            let state = parse_and_apply(r#"{"print": {"gcode_start_time": 1700000000.0}}"#);
+            assert_eq!(state.gcode_start_time, Some(1_700_000_000));
+        }
+
+        #[test]
         fn parses_xcam_with_bool_values() {
             let state = parse_and_apply(
                 r#"{"print": {"xcam": {
@@ -2769,12 +2797,43 @@ mod tests {
         }
 
         #[test]
-        fn detects_heatbreak_fan() {
+        fn detects_heatbreak_fan_on_x1c() {
             let msg: MqttMessage =
                 serde_json::from_str(r#"{"print": {"heatbreak_fan_speed": "10"}}"#).unwrap();
             let mut state = PrinterState::default();
+            state.set_model_from_serial("00M00A000000000"); // X1C
             state.update_from_message(&msg);
             assert!(state.has_heatbreak_fan());
+        }
+
+        #[test]
+        fn no_heatbreak_fan_on_p1s() {
+            let msg: MqttMessage =
+                serde_json::from_str(r#"{"print": {"heatbreak_fan_speed": "15"}}"#).unwrap();
+            let mut state = PrinterState::default();
+            state.set_model_from_serial("01P00A000000000"); // P1S
+            state.update_from_message(&msg);
+            assert!(!state.has_heatbreak_fan());
+        }
+
+        #[test]
+        fn no_heatbreak_fan_on_p1p() {
+            let msg: MqttMessage =
+                serde_json::from_str(r#"{"print": {"heatbreak_fan_speed": "15"}}"#).unwrap();
+            let mut state = PrinterState::default();
+            state.set_model_from_serial("01S00A000000000"); // P1P
+            state.update_from_message(&msg);
+            assert!(!state.has_heatbreak_fan());
+        }
+
+        #[test]
+        fn no_heatbreak_fan_on_a1() {
+            let msg: MqttMessage =
+                serde_json::from_str(r#"{"print": {"heatbreak_fan_speed": "15"}}"#).unwrap();
+            let mut state = PrinterState::default();
+            state.set_model_from_serial("03900A000000000"); // A1
+            state.update_from_message(&msg);
+            assert!(!state.has_heatbreak_fan());
         }
 
         #[test]
@@ -3188,6 +3247,62 @@ mod tests {
         fn is_active_false_for_empty_status() {
             let upgrade = UpgradeState::default();
             assert!(!upgrade.is_active());
+        }
+
+        #[test]
+        fn cleared_when_printing_starts() {
+            let mut state = PrinterState::default();
+
+            // Simulate a completed upgrade left in state (e.g. UPGRADE_SUCCESS at 100%)
+            let upgrade_json =
+                r#"{"upgrade_state": {"status": "UPGRADE_SUCCESS", "progress": 100}}"#;
+            let upgrade_report: PrintReport = serde_json::from_str(upgrade_json).expect("parse");
+            state.update_from_print_report(&upgrade_report);
+            assert!(state.upgrade_state.is_some(), "upgrade state should be set");
+
+            // Printer transitions to Running — upgrade state must be cleared
+            let print_json = r#"{"gcode_state": "RUNNING"}"#;
+            let print_report: PrintReport = serde_json::from_str(print_json).expect("parse");
+            state.update_from_print_report(&print_report);
+            assert!(
+                state.upgrade_state.is_none(),
+                "upgrade state must clear when printing"
+            );
+        }
+
+        #[test]
+        fn cleared_when_print_paused() {
+            let mut state = PrinterState::default();
+
+            let upgrade_json = r#"{"upgrade_state": {"status": "upgrading", "progress": 50}}"#;
+            let upgrade_report: PrintReport = serde_json::from_str(upgrade_json).expect("parse");
+            state.update_from_print_report(&upgrade_report);
+            assert!(state.upgrade_state.is_some());
+
+            let pause_json = r#"{"gcode_state": "PAUSE"}"#;
+            let pause_report: PrintReport = serde_json::from_str(pause_json).expect("parse");
+            state.update_from_print_report(&pause_report);
+            assert!(
+                state.upgrade_state.is_none(),
+                "upgrade state must clear when paused"
+            );
+        }
+
+        #[test]
+        fn cleared_when_both_fields_in_same_message() {
+            // Printer can send gcode_state and upgrade_state in the same MQTT message;
+            // upgrade_state must still be cleared if printing is active.
+            let json = r#"{
+                "gcode_state": "RUNNING",
+                "upgrade_state": {"status": "UPGRADE_SUCCESS", "progress": 100}
+            }"#;
+            let report: PrintReport = serde_json::from_str(json).expect("parse");
+            let mut state = PrinterState::default();
+            state.update_from_print_report(&report);
+            assert!(
+                state.upgrade_state.is_none(),
+                "upgrade state must be cleared even when both fields arrive together"
+            );
         }
     }
 }

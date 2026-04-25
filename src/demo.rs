@@ -6,7 +6,8 @@
 use crate::mqtt::SharedPrinterState;
 use crate::printer::{
     AmsState, AmsTray, AmsUnit, GcodeState, HmsError, IpcamState, LightState, PrintStatus,
-    PrinterState, ReceivedFields, Speeds, Temperatures, XcamState,
+    PrinterState, ReceivedFields, Speeds, Temperatures, XcamState, MODEL_A1_MINI, MODEL_P1S,
+    MODEL_X1C,
 };
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -42,7 +43,7 @@ fn office_x1c() -> PrinterState {
     PrinterState {
         connected: true,
         printer_name: "Office X1C".to_string(),
-        printer_model: "Bambu Lab X1C".to_string(),
+        printer_model: MODEL_X1C.to_string(),
         serial_suffix: "0M09".to_string(),
         print_status: PrintStatus {
             gcode_file: "Benchy.gcode.3mf".to_string(),
@@ -153,7 +154,7 @@ fn workshop_p1s() -> PrinterState {
     PrinterState {
         connected: true,
         printer_name: "Workshop P1S".to_string(),
-        printer_model: "P1S".to_string(),
+        printer_model: MODEL_P1S.to_string(),
         serial_suffix: "1P07".to_string(),
         print_status: PrintStatus {
             gcode_file: "Phone Stand.gcode.3mf".to_string(),
@@ -259,7 +260,7 @@ fn desk_a1_mini() -> PrinterState {
     PrinterState {
         connected: true,
         printer_name: "Desk A1 Mini".to_string(),
-        printer_model: "A1 Mini".to_string(),
+        printer_model: MODEL_A1_MINI.to_string(),
         serial_suffix: "3005".to_string(),
         print_status: PrintStatus {
             gcode_file: "Articulated Dragon.gcode.3mf".to_string(),

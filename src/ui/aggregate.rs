@@ -9,7 +9,7 @@ use super::common::{
 };
 use super::{STALE_CRITICAL_SECS, STALE_WARNING_SECS};
 use crate::app::App;
-use crate::printer::PrinterState;
+use crate::printer::{PrinterState, MODEL_UNKNOWN};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -149,7 +149,7 @@ fn render_printer_card(
     } else {
         // Use "P1S ...0428" format or fallback
         let model = if state.printer_model.is_empty() {
-            "Bambu Printer"
+            MODEL_UNKNOWN
         } else {
             &state.printer_model
         };

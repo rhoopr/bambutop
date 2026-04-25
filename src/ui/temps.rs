@@ -165,41 +165,27 @@ pub fn render(frame: &mut Frame, printer_state: &PrinterState, use_celsius: bool
     let speeds = &printer_state.speeds;
 
     // Fan speeds (always at top, conditionally show fans based on printer capabilities)
-    let mut fan_spans = Vec::with_capacity(14);
+    let mut fan_spans = Vec::with_capacity(10);
     fan_spans.push(Span::raw(" "));
     fan_spans.push(Span::styled("Fans: ", Style::new().fg(Color::DarkGray)));
-    fan_spans.push(Span::styled("Part ", Style::new().fg(Color::DarkGray)));
-    fan_spans.push(Span::styled("◆ ", Style::new().fg(Color::DarkGray)));
-    fan_spans.push(Span::styled(
-        format!("{}%", speeds.fan_speed),
-        Style::new().fg(Color::Cyan),
-    ));
-    if printer_state.has_heatbreak_fan() {
-        fan_spans.push(Span::styled(
-            "  Heatbreak ",
-            Style::new().fg(Color::DarkGray),
-        ));
-        fan_spans.push(Span::styled("◆ ", Style::new().fg(Color::DarkGray)));
-        fan_spans.push(Span::styled(
-            format!("{}%", printer_state.heatbreak_fan_speed),
-            Style::new().fg(Color::Cyan),
-        ));
-    }
-    if printer_state.has_aux_fan() {
-        fan_spans.push(Span::styled("  Aux ", Style::new().fg(Color::DarkGray)));
-        fan_spans.push(Span::styled("◆ ", Style::new().fg(Color::DarkGray)));
-        fan_spans.push(Span::styled(
-            format!("{}%", speeds.aux_fan_speed),
-            Style::new().fg(Color::Cyan),
-        ));
-    }
-    if printer_state.has_chamber_fan() {
-        fan_spans.push(Span::styled("  Chamber ", Style::new().fg(Color::DarkGray)));
-        fan_spans.push(Span::styled("◆ ", Style::new().fg(Color::DarkGray)));
-        fan_spans.push(Span::styled(
-            format!("{}%", speeds.chamber_fan_speed),
-            Style::new().fg(Color::Cyan),
-        ));
+    {
+        let mut add_fan = |label: &'static str, speed: u8| {
+            fan_spans.push(Span::styled(label, Style::new().fg(Color::DarkGray)));
+            fan_spans.push(Span::styled(
+                format!("{}%", speed),
+                Style::new().fg(Color::Cyan),
+            ));
+        };
+        add_fan("Part: ", speeds.fan_speed);
+        if printer_state.has_heatbreak_fan() {
+            add_fan("  Heatbreak: ", printer_state.heatbreak_fan_speed);
+        }
+        if printer_state.has_aux_fan() {
+            add_fan("  Aux: ", speeds.aux_fan_speed);
+        }
+        if printer_state.has_chamber_fan() {
+            add_fan("  Chamber: ", speeds.chamber_fan_speed);
+        }
     }
     let fan_line = Line::from(fan_spans);
     frame.render_widget(Paragraph::new(fan_line), chunks[0]);
