@@ -32,6 +32,25 @@ A terminal-based status monitor for Bambu Lab printers. `htop`, but for your 3D 
 
 Any Bambu printer that supports LAN mode should work. If yours isn't listed and it does, open an issue.
 
+## HMS alert descriptions
+
+Bambutop optionally reads Bambu Studio's downloaded English HMS tables. It prefers
+`hms_en_<serial prefix>.json` for the printer model, then `hms_en.json`. No vendor
+tables are bundled or downloaded by bambutop. Unknown alerts show their full HMS
+identifier and a Bambu wiki link rather than guessing from a partial code.
+
+The default directory is `BambuStudio/hms` beneath your platform's configuration
+directory (on Linux, typically `~/.config/BambuStudio/hms`). If your Bambu Studio
+installation stores tables elsewhere, specify that directory explicitly:
+
+```bash
+BAMBUTOP_HMS_DIR="/path/to/BambuStudio/hms" bambutop
+```
+
+Tables are cached on first use; restart bambutop after downloading or changing
+them. Missing or malformed tables do not prevent monitoring. Maintenance alerts
+appear as `INFO`, warnings as `WARN`, and errors as `ERR` in the overview.
+
 ## Installation
 
 ### Homebrew (macOS / Linux)

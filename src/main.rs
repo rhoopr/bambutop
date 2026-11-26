@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod demo;
+mod hms;
 mod mqtt;
 mod notifications;
 mod printer;
