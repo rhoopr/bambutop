@@ -597,6 +597,20 @@ pub(crate) struct InfoModule {
     pub(crate) sw_ver: Option<String>,
     pub(crate) hw_ver: Option<String>,
 }
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DeviceReport {
+    ctc: Option<ChamberReport>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChamberReport {
+    info: Option<ChamberInfo>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChamberInfo {
+    temp: Option<f32>,
+}
 
 /// Raw print report from MQTT containing all fields sent by the printer.
 ///
@@ -639,6 +653,7 @@ pub(crate) struct PrintReport {
     pub(crate) bed_temper: Option<f32>,
     pub(crate) bed_target_temper: Option<f32>,
     pub(crate) chamber_temper: Option<f32>,
+    pub(crate) device: Option<DeviceReport>,
 
     // Speeds & fans
     pub(crate) spd_lvl: Option<u8>,
@@ -907,7 +922,14 @@ impl PrinterState {
         if let Some(v) = report.bed_target_temper {
             self.temperatures.bed_target = v;
         }
-        if let Some(v) = report.chamber_temper {
+        if let Some(v) = report
+            .device
+            .as_ref()
+            .and_then(|d| d.ctc.as_ref())
+            .and_then(|c| c.info.as_ref())
+            .and_then(|i| i.temp)
+            .or(report.chamber_temper)
+        {
             self.temperatures.chamber = v;
         }
 
@@ -1410,6 +1432,25 @@ fn model_has_heatbreak_fan(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chamber_temperature_supports_p2s_and_partial_updates() {
+        let mut state = PrinterState::default();
+        for (payload, expected) in [
+            (r#"{"print":{"chamber_temper":28}}"#, 28.0),
+            (
+                r#"{"print":{"device":{"ctc":{"info":{"temp":35}}},"chamber_temper":0}}"#,
+                35.0,
+            ),
+            (r#"{"print":{"device":{"ctc":{"state":0}}}}"#, 35.0),
+            (r#"{"print":{"device":{},"chamber_temper":29}}"#, 29.0),
+            (r#"{"print":{"device":{"ctc":{"info":{"temp":0}}}}}"#, 0.0),
+        ] {
+            let msg: MqttMessage = serde_json::from_str(payload).unwrap();
+            state.update_from_message(&msg);
+            assert_eq!(state.temperatures.chamber, expected);
+        }
+    }
 
     mod speed_level_to_percent_tests {
         use super::*;
