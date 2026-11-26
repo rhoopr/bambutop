@@ -15,8 +15,6 @@ const TRAY_EXTERNAL_SPOOL: u8 = 254;
 
 /// Bit shift to extract the module ID from an HMS attr field.
 const HMS_MODULE_SHIFT: u32 = 24;
-/// Bit shift to extract the severity from an HMS attr field.
-const HMS_SEVERITY_SHIFT: u32 = 16;
 /// Byte mask for extracting 8-bit HMS fields.
 const HMS_BYTE_MASK: u32 = 0xFF;
 
@@ -969,8 +967,10 @@ impl PrinterState {
                 .map(|h| HmsError {
                     code: h.code,
                     module: ((h.attr >> HMS_MODULE_SHIFT) & HMS_BYTE_MASK) as u8,
-                    severity: ((h.attr >> HMS_SEVERITY_SHIFT) & HMS_BYTE_MASK) as u8,
-                    message: format_hms_code(h.code),
+                    severity: hms_severity(h.code),
+                    message: crate::hms::description(&self.printer_model, h.attr, h.code)
+                        .map(Cow::Owned)
+                        .unwrap_or_else(|| Cow::Owned(crate::hms::fallback(h.attr, h.code))),
                     received_at: now,
                 })
                 .collect();
@@ -1284,64 +1284,11 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
-fn format_hms_code(code: u32) -> Cow<'static, str> {
-    // HMS error code lookup - common codes from Bambu documentation
-    match code {
-        // AMS errors (0x0700xxxx)
-        0x0700_0001 => Cow::Borrowed("AMS: Filament runout"),
-        0x0700_0002 => Cow::Borrowed("AMS: Filament broken"),
-        0x0700_0003 => Cow::Borrowed("AMS: Filament tangled"),
-        0x0700_0004 => Cow::Borrowed("AMS: Filament unloading failed"),
-        0x0700_0005 => Cow::Borrowed("AMS: Filament loading failed"),
-        0x0700_0006 => Cow::Borrowed("AMS: Slot empty"),
-        0x0700_0100 => Cow::Borrowed("AMS: Assist motor overload"),
-        0x0700_0200 => Cow::Borrowed("AMS: Cutter error"),
-        0x0700_0300 => Cow::Borrowed("AMS: Filament may be tangled"),
-        0x0700_0400 => Cow::Borrowed("AMS: RFID read error"),
-        0x0700_0500 => Cow::Borrowed("AMS: AMS communication error"),
-        0x0700_1000 => Cow::Borrowed("AMS: Humidity sensor error"),
-
-        // Nozzle/hotend errors (0x0300xxxx)
-        0x0300_0001 => Cow::Borrowed("Nozzle: Temperature too high"),
-        0x0300_0002 => Cow::Borrowed("Nozzle: Temperature too low"),
-        0x0300_0003 => Cow::Borrowed("Nozzle: Temperature abnormal"),
-        0x0300_0100 => Cow::Borrowed("Nozzle: Heater error"),
-        0x0300_0200 => Cow::Borrowed("Nozzle: Thermistor error"),
-        0x0300_0300 => Cow::Borrowed("Nozzle: Clogged"),
-
-        // Bed errors (0x0400xxxx)
-        0x0400_0001 => Cow::Borrowed("Bed: Temperature too high"),
-        0x0400_0002 => Cow::Borrowed("Bed: Temperature too low"),
-        0x0400_0100 => Cow::Borrowed("Bed: Heater error"),
-        0x0400_0200 => Cow::Borrowed("Bed: Thermistor error"),
-
-        // Motion errors (0x0500xxxx)
-        0x0500_0001 => Cow::Borrowed("Motion: X-axis homing failed"),
-        0x0500_0002 => Cow::Borrowed("Motion: Y-axis homing failed"),
-        0x0500_0003 => Cow::Borrowed("Motion: Z-axis homing failed"),
-        0x0500_0100 => Cow::Borrowed("Motion: X-axis motor error"),
-        0x0500_0200 => Cow::Borrowed("Motion: Y-axis motor error"),
-        0x0500_0300 => Cow::Borrowed("Motion: Z-axis motor error"),
-        0x0500_0400 => Cow::Borrowed("Motion: Extruder motor error"),
-
-        // Print errors (0x0C00xxxx)
-        0x0C00_0001 => Cow::Borrowed("Print: First layer inspection failed"),
-        0x0C00_0002 => Cow::Borrowed("Print: Spaghetti detected"),
-        0x0C00_0003 => Cow::Borrowed("Print: Foreign object on bed"),
-        0x0C00_0100 => Cow::Borrowed("Print: Build plate not detected"),
-        0x0C00_0200 => Cow::Borrowed("Print: Auto-leveling failed"),
-        0x0C00_0300 => Cow::Borrowed("Print: Nozzle height abnormal"),
-
-        // System errors (0x0800xxxx)
-        0x0800_0001 => Cow::Borrowed("System: SD card error"),
-        0x0800_0002 => Cow::Borrowed("System: Storage full"),
-        0x0800_0100 => Cow::Borrowed("System: Camera error"),
-        0x0800_0200 => Cow::Borrowed("System: WiFi disconnected"),
-        0x0800_0300 => Cow::Borrowed("System: Chamber door open"),
-        0x0800_0400 => Cow::Borrowed("System: Front cover removed"),
-
-        // Fallback for unknown codes
-        _ => Cow::Borrowed("See wiki.bambulab.com"),
+fn hms_severity(code: u32) -> u8 {
+    match (code >> 16) & HMS_BYTE_MASK {
+        3 => 0, // informational/maintenance
+        2 => 1, // warning
+        _ => 2, // error or unknown
     }
 }
 
@@ -1410,6 +1357,14 @@ fn model_has_heatbreak_fan(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_hms_severity_from_code() {
+        assert_eq!(hms_severity(0x0003_0002), 0);
+        assert_eq!(hms_severity(0x0002_0001), 1);
+        assert_eq!(hms_severity(0x0001_0001), 2);
+        assert_eq!(hms_severity(0x0099_0001), 2);
+    }
 
     mod speed_level_to_percent_tests {
         use super::*;
@@ -1532,31 +1487,6 @@ mod tests {
         fn ignores_alpha_channel() {
             // Only first 6 hex chars are used, alpha is ignored
             assert_eq!(parse_hex_color("FF0000FF"), Some((255, 0, 0)));
-        }
-    }
-
-    mod format_hms_code_tests {
-        use super::*;
-
-        #[test]
-        fn returns_borrowed_for_known_codes() {
-            let result = format_hms_code(0x0700_0001);
-            assert!(matches!(result, Cow::Borrowed(_)));
-            assert_eq!(result, "AMS: Filament runout");
-        }
-
-        #[test]
-        fn returns_borrowed_for_unknown_codes() {
-            let result = format_hms_code(0x9999_9999);
-            assert!(matches!(result, Cow::Borrowed(_)));
-            assert_eq!(result, "See wiki.bambulab.com");
-        }
-
-        #[test]
-        fn maps_common_error_codes() {
-            assert_eq!(format_hms_code(0x0300_0300), "Nozzle: Clogged");
-            assert_eq!(format_hms_code(0x0400_0001), "Bed: Temperature too high");
-            assert_eq!(format_hms_code(0x0C00_0002), "Print: Spaghetti detected");
         }
     }
 
@@ -1864,9 +1794,9 @@ mod tests {
         fn parses_hms_errors() {
             let mut state = PrinterState::default();
 
-            // attr layout: [module (8 bits)][severity (8 bits)][reserved (16 bits)]
+            // The attr identifies the module; severity comes from code.
             // module = (attr >> 24) & 0xFF
-            // severity = (attr >> 16) & 0xFF
+            // code bits 16..23 encode severity.
             let msg = MqttMessage {
                 print: Some(PrintReport {
                     hms: Some(vec![
@@ -1889,10 +1819,12 @@ mod tests {
             assert_eq!(state.hms_errors[0].code, 0x0700_0001);
             assert_eq!(state.hms_errors[0].module, 1);
             assert_eq!(state.hms_errors[0].severity, 2);
-            assert_eq!(state.hms_errors[0].message, "AMS: Filament runout");
+            assert!(state.hms_errors[0].message.contains("0102000007000001"));
             assert_eq!(state.hms_errors[1].module, 2);
-            assert_eq!(state.hms_errors[1].severity, 1);
-            assert_eq!(state.hms_errors[1].message, "See wiki.bambulab.com");
+            assert_eq!(state.hms_errors[1].severity, 2);
+            assert!(state.hms_errors[1]
+                .message
+                .contains("wiki.bambulab.com/en/hms/"));
         }
 
         #[test]
