@@ -15,8 +15,6 @@ const TRAY_EXTERNAL_SPOOL: u8 = 254;
 
 /// Bit shift to extract the module ID from an HMS attr field.
 const HMS_MODULE_SHIFT: u32 = 24;
-/// Bit shift to extract the severity from an HMS attr field.
-const HMS_SEVERITY_SHIFT: u32 = 16;
 /// Byte mask for extracting 8-bit HMS fields.
 const HMS_BYTE_MASK: u32 = 0xFF;
 
@@ -969,7 +967,7 @@ impl PrinterState {
                 .map(|h| HmsError {
                     code: h.code,
                     module: ((h.attr >> HMS_MODULE_SHIFT) & HMS_BYTE_MASK) as u8,
-                    severity: ((h.attr >> HMS_SEVERITY_SHIFT) & HMS_BYTE_MASK) as u8,
+                    severity: hms_severity(h.code),
                     message: format_hms_code(h.code),
                     received_at: now,
                 })
@@ -1284,6 +1282,14 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
+fn hms_severity(code: u32) -> u8 {
+    match (code >> 16) & HMS_BYTE_MASK {
+        3 => 0, // informational/maintenance
+        2 => 1, // warning
+        _ => 2, // error or unknown
+    }
+}
+
 fn format_hms_code(code: u32) -> Cow<'static, str> {
     // HMS error code lookup - common codes from Bambu documentation
     match code {
@@ -1411,6 +1417,14 @@ fn model_has_heatbreak_fan(model: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn decodes_hms_severity_from_code() {
+        assert_eq!(hms_severity(0x0003_0002), 0);
+        assert_eq!(hms_severity(0x0002_0001), 1);
+        assert_eq!(hms_severity(0x0001_0001), 2);
+        assert_eq!(hms_severity(0x0099_0001), 2);
+    }
+
     mod speed_level_to_percent_tests {
         use super::*;
 
@@ -1428,6 +1442,14 @@ mod tests {
             assert_eq!(speed_level_to_percent(5), 100);
             assert_eq!(speed_level_to_percent(255), 100);
         }
+    }
+
+    #[test]
+    fn decodes_hms_severity_from_code() {
+        assert_eq!(hms_severity(0x0003_0002), 0);
+        assert_eq!(hms_severity(0x0002_0001), 1);
+        assert_eq!(hms_severity(0x0001_0001), 2);
+        assert_eq!(hms_severity(0x0099_0001), 2);
     }
 
     mod speed_level_to_name_tests {
@@ -1864,9 +1886,9 @@ mod tests {
         fn parses_hms_errors() {
             let mut state = PrinterState::default();
 
-            // attr layout: [module (8 bits)][severity (8 bits)][reserved (16 bits)]
+            // The attr identifies the module; severity comes from code.
             // module = (attr >> 24) & 0xFF
-            // severity = (attr >> 16) & 0xFF
+            // code bits 16..23 encode severity.
             let msg = MqttMessage {
                 print: Some(PrintReport {
                     hms: Some(vec![
@@ -1891,7 +1913,7 @@ mod tests {
             assert_eq!(state.hms_errors[0].severity, 2);
             assert_eq!(state.hms_errors[0].message, "AMS: Filament runout");
             assert_eq!(state.hms_errors[1].module, 2);
-            assert_eq!(state.hms_errors[1].severity, 1);
+            assert_eq!(state.hms_errors[1].severity, 2);
             assert_eq!(state.hms_errors[1].message, "See wiki.bambulab.com");
         }
 

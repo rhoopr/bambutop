@@ -101,7 +101,8 @@ pub fn render(frame: &mut Frame, app: &App, printer_state: &PrinterState, area: 
     } else if !printer_state.hms_errors.is_empty() {
         for error in &printer_state.hms_errors {
             let severity_color = match error.severity {
-                0..=HMS_SEVERITY_WARNING => Color::Yellow,
+                0 => Color::Cyan,
+                HMS_SEVERITY_WARNING => Color::Yellow,
                 HMS_SEVERITY_ERROR => Color::LightRed,
                 _ => Color::Red,
             };

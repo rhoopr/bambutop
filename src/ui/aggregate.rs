@@ -268,6 +268,10 @@ fn render_info_row(
         (Cow::Borrowed("--"), Color::DarkGray)
     } else if state.hms_errors.is_empty() {
         (Cow::Borrowed("OK"), Color::Green)
+    } else if state.hms_errors.iter().all(|e| e.severity == 0) {
+        (Cow::Borrowed("INFO"), Color::Cyan)
+    } else if state.hms_errors.iter().all(|e| e.severity <= 1) {
+        (Cow::Borrowed("WARN"), Color::Yellow)
     } else {
         (Cow::Borrowed("ERR"), Color::Red)
     };
